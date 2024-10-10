@@ -130,8 +130,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 2 # to be able to check for changes in subfolder jscomp/syntax later
 
       - name: Use Node.js
         uses: actions/setup-node@v4
@@ -188,7 +186,7 @@ jobs:
 
       - name: Install OPAM dependencies
         if: steps.cache-opam-env.outputs.cache-hit != 'true'
-        run: opam install . --deps-only
+        run: opam install . --deps-only --with-test
 
       - name: Cache OPAM environment
         if: steps.cache-opam-env.outputs.cache-hit != 'true'
@@ -297,54 +295,37 @@ jobs:
         if: steps.ninja-build-cache.outputs.cache-hit != 'true'
         run: node ./scripts/copyExes.js -ninja
 
-      - name: "Check if syntax subfolder has changed"
-        id: syntax-diff
-        shell: bash
-        run: |
-          if git diff --name-only --exit-code HEAD^ HEAD -- jscomp/syntax; then
-            echo "syntax_status=unchanged" >> $GITHUB_ENV
-          else
-            echo "syntax_status=changed" >> $GITHUB_ENV
-          fi
-
       - name: "Syntax: Run roundtrip tests"
-        if: ${{ env.syntax_status == 'changed' && runner.os != 'Windows' }}
+        if: ${{ runner.os != 'Windows' }}
         run: opam exec -- make test-syntax-roundtrip
 
       - name: "Syntax: Run tests (Windows)"
-        if: ${{ env.syntax_status == 'changed' && runner.os == 'Windows' }}
+        if: ${{ runner.os == 'Windows' }}
         run: opam exec -- make test-syntax
 
       - name: Build runtime/stdlib
-        if: runner.os != 'Windows'
-        run: |
-          opam exec -- node ./scripts/ninja.js config
-          opam exec -- node ./scripts/ninja.js build
+        run: ./scripts/buildRuntime.sh
+        shell: bash
 
       - name: Check for changes in lib folder
         run: git diff --exit-code lib/js lib/es6
 
-      - name: Populate lib/ocaml
+      - name: Version Check
         run: ./scripts/prebuilt.js
 
       - name: Run tests
-        if: runner.os != 'Windows'
-        run: node scripts/ciTest.js -all
+        run: node scripts/test.js -all
 
       - name: Run gentype tests
         if: runner.os != 'Windows'
-        run: make -C jscomp/gentype_tests/typescript-react-example clean test
-
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
-        run: node scripts/ciTest.js -mocha -theme -format
+        run: make -C tests/gentype_tests/typescript-react-example clean test
 
       - name: Build playground compiler
         if: matrix.build_playground
         run: |
           opam exec -- node packages/playground-bundling/scripts/generate_cmijs.js
           opam exec -- dune build --profile browser
-          cp ./_build/default/jscomp/jsoo/jsoo_playground_main.bc.js playground/compiler.js
+          cp ./_build/default/compiler/jsoo/jsoo_playground_main.bc.js playground/compiler.js
 
       - name: Test playground compiler
         if: matrix.build_playground

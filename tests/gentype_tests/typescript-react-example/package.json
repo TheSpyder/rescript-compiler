@@ -1,0 +1,24 @@
+{
+  "name": "typescript-react-example",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "rescript build -w",
+    "build": "rescript",
+    "clean": "rescript clean",
+    "tsc": "tsc -p tsconfig.json",
+    "lint": "biome check src"
+  },
+  "dependencies": {
+    "@rescript/react": "^0.13.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.8.3",
+    "@types/node": "^18.15.12",
+    "@types/react-dom": "^18.0.11",
+    "rescript": "file:../../..",
+    "typescript": "^5.2.2"
+  }
+}
