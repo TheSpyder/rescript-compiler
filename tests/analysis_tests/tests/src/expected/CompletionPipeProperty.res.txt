@@ -1,0 +1,86 @@
+Complete src/CompletionPipeProperty.res 21:17
+posCursor:[21:17] posNoWhite:[21:16] Found expr:[21:3->21:17]
+Pexp_field [21:3->21:16] _:[23:0->21:17]
+Completable: Cpath Value[sprite].anchor.""
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+ContextPath Value[sprite].anchor.""
+ContextPath Value[sprite].anchor
+ContextPath Value[sprite]
+Path sprite
+ContextPath Value[sprite]->anchor
+ContextPath Value[sprite]
+Path sprite
+CPPipe pathFromEnv:Sprite found:true
+Path Sprite.anchor
+Path anchor
+ContextPath Value[sprite].anchor->
+ContextPath Value[sprite].anchor
+ContextPath Value[sprite]
+Path sprite
+ContextPath Value[sprite]->anchor
+ContextPath Value[sprite]
+Path sprite
+CPPipe pathFromEnv:Sprite found:true
+Path Sprite.anchor
+Path anchor
+CPPipe pathFromEnv:ObservablePoint found:true
+Path ObservablePoint.
+Path 
+[
+  {
+    "detail": "int",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nx: int\n```\n\n```rescript\ntype op = {mutable x: int, mutable y: int}\n```"
+    },
+    "kind": 5,
+    "label": "x",
+    "tags": []
+  },
+  {
+    "detail": "int",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\ny: int\n```\n\n```rescript\ntype op = {mutable x: int, mutable y: int}\n```"
+    },
+    "kind": 5,
+    "label": "y",
+    "tags": []
+  },
+  {
+    "additionalTextEdits": [
+      {
+        "newText": "",
+        "range": {
+          "end": { "character": 17, "line": 21 },
+          "start": { "character": 16, "line": 21 }
+        }
+      }
+    ],
+    "detail": "(op, float) => unit",
+    "insertText": "->ObservablePoint.setBoth",
+    "kind": 12,
+    "label": "->ObservablePoint.setBoth",
+    "sortText": "setBoth",
+    "tags": []
+  },
+  {
+    "additionalTextEdits": [
+      {
+        "newText": "",
+        "range": {
+          "end": { "character": 17, "line": 21 },
+          "start": { "character": 16, "line": 21 }
+        }
+      }
+    ],
+    "detail": "(op, float, float) => unit",
+    "insertText": "->ObservablePoint.set",
+    "kind": 12,
+    "label": "->ObservablePoint.set",
+    "sortText": "set",
+    "tags": []
+  }
+]
+

@@ -1,0 +1,84 @@
+(** Iteration over cross-file items held in the reactive collection. *)
+
+type t = (string, Cross_file_items.t) Reactive.t
+
+let of_reactive reactive = reactive
+
+let iter_items t f =
+  Reactive.iter (fun _path (items : Cross_file_items.t) -> f items) t
+
+let iter_optional_arg_calls t f =
+  iter_items t (fun items ->
+      List.iter f items.Cross_file_items.optional_arg_calls)
+
+let iter_function_refs t f =
+  iter_items t (fun items -> List.iter f items.Cross_file_items.function_refs)
+
+let iter_optional_arg_value_escapes t f =
+  iter_items t (fun items ->
+      List.iter f items.Cross_file_items.optional_arg_value_escapes)
+
+(** Compute optional args state from calls and function references.
+    Returns a map from position to final OptionalArgs.t state.
+    Pure function - does not mutate declarations. *)
+let compute_optional_args_state (store : t) ~find_decl ~is_live :
+    Optional_args_state.t =
+  let state = Optional_args_state.create () in
+  (* Initialize state from declarations *)
+  let get_state pos =
+    match Optional_args_state.find_opt state pos with
+    | Some s -> s
+    | None -> (
+      match find_decl pos with
+      | Some {Decl.decl_kind = Value {optional_args}} -> optional_args
+      | _ -> Optional_args.empty)
+  in
+  let set_state pos s = Optional_args_state.set state pos s in
+  (* Process optional arg calls *)
+  iter_optional_arg_calls store
+    (fun {Cross_file_items.pos_from; pos_to; arg_names; arg_names_maybe} ->
+      if is_live pos_from then
+        let current = get_state pos_to in
+        let updated =
+          Optional_args.apply_call ~arg_names ~arg_names_maybe current
+        in
+        set_state pos_to updated);
+  (* Process function references *)
+  iter_function_refs store (fun {Cross_file_items.pos_from; pos_to} ->
+      if is_live pos_from then
+        let state_from = get_state pos_from in
+        let state_to = get_state pos_to in
+        if not (Optional_args.is_empty state_to) then (
+          let updated_from, updated_to =
+            Optional_args.combine_pair state_from state_to
+          in
+          set_state pos_from updated_from;
+          set_state pos_to updated_to));
+  state
+
+let compute_live_optional_arg_value_escapes (store : t) ~is_live : Pos_set.t =
+  (* Compute this as a batch after solver propagation: the result depends on
+     final liveness and on the fully merged cross-file items. If it becomes a
+     cached/reactive value, both dependencies must participate in invalidation. *)
+  let escapes = ref Pos_set.empty in
+  iter_optional_arg_value_escapes store
+    (fun {Cross_file_items.pos_from; pos_to} ->
+      if is_live pos_from then escapes := Pos_set.add pos_to !escapes);
+  let function_refs = ref [] in
+  iter_function_refs store (fun {Cross_file_items.pos_from; pos_to} ->
+      if is_live pos_from then
+        function_refs := (pos_from, pos_to) :: !function_refs);
+  (* A function reference aliases both declaration positions. Close escapes over
+     the undirected links so aliases and interface/implementation pairs agree. *)
+  let rec propagate escapes =
+    let propagated =
+      List.fold_left
+        (fun escapes (pos_from, pos_to) ->
+          if Pos_set.mem pos_from escapes then Pos_set.add pos_to escapes
+          else if Pos_set.mem pos_to escapes then Pos_set.add pos_from escapes
+          else escapes)
+        escapes !function_refs
+    in
+    if Pos_set.equal propagated escapes then escapes else propagate propagated
+  in
+  propagate !escapes

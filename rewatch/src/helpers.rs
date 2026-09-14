@@ -1,29 +1,108 @@
 use crate::build::packages;
+use crate::config::Config;
+use crate::helpers;
+use crate::project_context::ProjectContext;
+use anyhow::anyhow;
 use std::ffi::OsString;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::io::{self, BufRead};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type StdErr = String;
 
+pub mod deserialize;
+
 pub mod emojis {
     use console::Emoji;
-    pub static COMMAND: Emoji<'_, '_> = Emoji("🏃 ", "");
-    pub static TREE: Emoji<'_, '_> = Emoji("📦 ", "");
-    pub static SWEEP: Emoji<'_, '_> = Emoji("🧹 ", "");
-    pub static LOOKING_GLASS: Emoji<'_, '_> = Emoji("🕵️  ", "");
-    pub static CODE: Emoji<'_, '_> = Emoji("🧱 ", "");
-    pub static SWORDS: Emoji<'_, '_> = Emoji("🤺 ️", "");
-    pub static DEPS: Emoji<'_, '_> = Emoji("️🌴 ", "");
-    pub static CHECKMARK: Emoji<'_, '_> = Emoji("️✅ ", "");
-    pub static CROSS: Emoji<'_, '_> = Emoji("️🛑 ", "");
-    pub static SPARKLES: Emoji<'_, '_> = Emoji("✨ ", "");
-    pub static COMPILE_STATE: Emoji<'_, '_> = Emoji("📝 ", "");
+    pub static COMMAND: Emoji<'_, '_> = Emoji("🏃 ", "[run] ");
+    pub static SWEEP: Emoji<'_, '_> = Emoji("🧹 ", "[clean] ");
+    pub static PARSE: Emoji<'_, '_> = Emoji("🧱 ", "[parse] ");
+    pub static SWORDS: Emoji<'_, '_> = Emoji("🤺 ", "[build] ");
+    pub static CHECKMARK: Emoji<'_, '_> = Emoji("✅ ", "[ok] ");
+    pub static WARNING: Emoji<'_, '_> = Emoji("⚠️ ", "[warn] ");
+    pub static CROSS: Emoji<'_, '_> = Emoji("❌ ", "[error] ");
     pub static LINE_CLEAR: &str = "\x1b[2K\r";
+}
+
+// Cached check: does the given directory contain a node_modules subfolder?
+fn has_node_modules_cached(project_context: &ProjectContext, dir: &Path) -> bool {
+    match project_context.node_modules_exist_cache.read() {
+        Ok(cache) => {
+            if let Some(exists) = cache.get(dir) {
+                return *exists;
+            }
+        }
+        Err(poisoned) => {
+            log::warn!("node_modules_exist_cache read lock poisoned; recovering");
+            let cache = poisoned.into_inner();
+            if let Some(exists) = cache.get(dir) {
+                return *exists;
+            }
+        }
+    }
+    let exists = dir.join("node_modules").exists();
+    match project_context.node_modules_exist_cache.write() {
+        Ok(mut cache) => {
+            cache.insert(dir.to_path_buf(), exists);
+        }
+        Err(poisoned) => {
+            log::warn!("node_modules_exist_cache write lock poisoned; recovering");
+            let mut cache = poisoned.into_inner();
+            cache.insert(dir.to_path_buf(), exists);
+        }
+    }
+    exists
+}
+
+/// This trait is used to strip the verbatim prefix from a Windows path.
+/// On non-Windows systems, it simply returns the original path.
+/// This is needed until the rescript compiler can handle such paths.
+pub trait StrippedVerbatimPath {
+    fn to_stripped_verbatim_path(self) -> PathBuf;
+}
+
+impl StrippedVerbatimPath for PathBuf {
+    fn to_stripped_verbatim_path(self) -> PathBuf {
+        if cfg!(not(target_os = "windows")) {
+            return self;
+        }
+
+        let mut stripped = PathBuf::new();
+        for component in self.components() {
+            match component {
+                Component::Prefix(prefix_component) => {
+                    if prefix_component.kind().is_verbatim() {
+                        stripped.push(
+                            prefix_component
+                                .as_os_str()
+                                .to_string_lossy()
+                                .strip_prefix("\\\\?\\")
+                                .unwrap(),
+                        );
+                    } else {
+                        stripped.push(prefix_component.as_os_str());
+                    }
+                }
+                Component::RootDir => {
+                    stripped.push(Component::RootDir);
+                }
+                Component::CurDir => {
+                    stripped.push(Component::CurDir);
+                }
+                Component::ParentDir => {
+                    stripped.push(Component::ParentDir);
+                }
+                Component::Normal(os_str) => {
+                    stripped.push(Component::Normal(os_str));
+                }
+            }
+        }
+        stripped
+    }
 }
 
 pub trait LexicalAbsolute {
@@ -50,38 +129,175 @@ impl LexicalAbsolute for Path {
     }
 }
 
-pub fn package_path(root: &str, package_name: &str) -> String {
-    format!("{}/node_modules/{}", root, package_name)
+pub fn package_path(root: &Path, package_name: &str) -> PathBuf {
+    root.join("node_modules").join(package_name)
 }
 
-pub fn get_abs_path(path: &str) -> String {
+// Tap-style helper: cache and return the value (single clone for cache insert)
+fn cache_package_tap(
+    project_context: &ProjectContext,
+    key: &(PathBuf, String),
+    value: PathBuf,
+) -> anyhow::Result<PathBuf> {
+    match project_context.packages_cache.write() {
+        Ok(mut cache) => {
+            cache.insert(key.clone(), value.clone());
+        }
+        Err(poisoned) => {
+            log::warn!("packages_cache write lock poisoned; recovering");
+            let mut cache = poisoned.into_inner();
+            cache.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(value)
+}
+
+/// Tries to find a path for input package_name.
+/// The node_modules folder may be found at different levels in the case of a monorepo.
+/// This helper tries a variety of paths.
+pub fn try_package_path(
+    package_config: &Config,
+    project_context: &ProjectContext,
+    package_name: &str,
+) -> anyhow::Result<PathBuf> {
+    // try cached result first, keyed by (package_dir, package_name)
+    let pkg_name = package_name.to_string();
+    let package_dir = package_config
+        .path
+        .parent()
+        .ok_or_else(|| {
+            anyhow!(
+                "Expected {} to have a parent folder",
+                package_config.path.to_string_lossy()
+            )
+        })?
+        .to_path_buf();
+
+    let cache_key = (package_dir.clone(), pkg_name.clone());
+    match project_context.packages_cache.read() {
+        Ok(cache) => {
+            if let Some(cached) = cache.get(&cache_key) {
+                return Ok(cached.clone());
+            }
+        }
+        Err(poisoned) => {
+            log::warn!("packages_cache read lock poisoned; recovering");
+            let cache = poisoned.into_inner();
+            if let Some(cached) = cache.get(&cache_key) {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    // package folder + node_modules + package_name
+    // This can happen in the following scenario:
+    // The ProjectContext has a MonoRepoContext::MonorepoRoot.
+    // We are reading a dependency from the root package.
+    // And that local dependency has a hoisted dependency.
+    // Example, we need to find package_name `foo` in the following scenario:
+    // root/packages/a/node_modules/foo
+    let path_from_current_package = helpers::package_path(&package_dir, package_name);
+
+    // current folder + node_modules + package_name
+    let path_from_current_config = project_context
+        .current_config
+        .path
+        .parent()
+        .ok_or_else(|| {
+            anyhow!(
+                "Expected {} to have a parent folder",
+                project_context.current_config.path.to_string_lossy()
+            )
+        })
+        .map(|parent_path| package_path(parent_path, package_name))?;
+
+    // root folder + node_modules + package_name
+    let path_from_root = package_path(project_context.get_root_path(), package_name);
+    if path_from_current_package.exists() {
+        cache_package_tap(project_context, &cache_key, path_from_current_package)
+    } else if path_from_current_config.exists() {
+        cache_package_tap(project_context, &cache_key, path_from_current_config)
+    } else if path_from_root.exists() {
+        cache_package_tap(project_context, &cache_key, path_from_root)
+    } else {
+        // As a last resort, when we're in a Single project context, traverse upwards
+        // starting from the parent of the package root (package_config.path.parent().parent())
+        // and probe each ancestor's node_modules for the dependency. This covers hoisted
+        // workspace setups when building a package standalone.
+        if project_context.monorepo_context.is_none() {
+            match package_config.path.parent().and_then(|p| p.parent()) {
+                Some(start_dir) => {
+                    return find_dep_in_upward_node_modules(project_context, start_dir, package_name)
+                        .and_then(|p| cache_package_tap(project_context, &cache_key, p));
+                }
+                None => {
+                    log::debug!(
+                        "try_package_path: cannot compute start directory for upward traversal from '{}'",
+                        package_config.path.to_string_lossy()
+                    );
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "The package \"{package_name}\" is not found (are node_modules up-to-date?)..."
+        ))
+    }
+}
+
+fn find_dep_in_upward_node_modules(
+    project_context: &ProjectContext,
+    start_dir: &Path,
+    package_name: &str,
+) -> anyhow::Result<PathBuf> {
+    log::debug!(
+        "try_package_path: falling back to upward traversal for '{}' starting at '{}'",
+        package_name,
+        start_dir.to_string_lossy()
+    );
+
+    let mut current = Some(start_dir);
+    while let Some(dir) = current {
+        if has_node_modules_cached(project_context, dir) {
+            let candidate = package_path(dir, package_name);
+            log::debug!("try_package_path: checking '{}'", candidate.to_string_lossy());
+            if candidate.exists() {
+                log::debug!(
+                    "try_package_path: found '{}' at '{}' via upward traversal",
+                    package_name,
+                    candidate.to_string_lossy()
+                );
+                return Ok(candidate);
+            }
+        }
+        current = dir.parent();
+    }
+    log::debug!(
+        "try_package_path: no '{}' found during upward traversal from '{}'",
+        package_name,
+        start_dir.to_string_lossy()
+    );
+    Err(anyhow!(
+        "try_package_path: upward traversal did not find '{}' starting at '{}'",
+        package_name,
+        start_dir.to_string_lossy()
+    ))
+}
+
+pub fn get_abs_path(path: &Path) -> PathBuf {
     let abs_path_buf = PathBuf::from(path);
 
-    return abs_path_buf
+    abs_path_buf
         .to_lexical_absolute()
         .expect("Could not canonicalize")
-        .to_str()
-        .expect("Could not canonicalize")
-        .to_string();
 }
 
-pub fn get_basename(path: &str) -> String {
-    let path_buf = PathBuf::from(path);
-    return path_buf
-        .file_stem()
+pub fn get_basename(path: &Path) -> String {
+    path.file_stem()
         .expect("Could not get basename")
         .to_str()
         .expect("Could not get basename 2")
-        .to_string();
-}
-
-pub fn change_extension(path: &str, new_extension: &str) -> String {
-    let path_buf = PathBuf::from(path);
-    return path_buf
-        .with_extension(new_extension)
-        .to_str()
-        .expect("Could not change extension")
-        .to_string();
+        .to_string()
 }
 
 /// Capitalizes the first character in s.
@@ -111,12 +327,12 @@ pub fn module_name_with_namespace(module_name: &str, namespace: &packages::Names
 
 // this doesn't capitalize the module name! if the rescript name of the file is "foo.res" the
 // compiler assets are foo-Namespace.cmt and foo-Namespace.cmj, but the module name is Foo
-pub fn file_path_to_compiler_asset_basename(path: &str, namespace: &packages::Namespace) -> String {
+pub fn file_path_to_compiler_asset_basename(path: &Path, namespace: &packages::Namespace) -> String {
     let base = get_basename(path);
     add_suffix(&base, namespace)
 }
 
-pub fn file_path_to_module_name(path: &str, namespace: &packages::Namespace) -> String {
+pub fn file_path_to_module_name(path: &Path, namespace: &packages::Namespace) -> String {
     capitalize(&file_path_to_compiler_asset_basename(path, namespace))
 }
 
@@ -129,42 +345,32 @@ pub fn contains_ascii_characters(str: &str) -> bool {
     false
 }
 
-pub fn create_build_path(build_path: &str) {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .create(PathBuf::from(build_path.to_string()))
-        .unwrap();
+pub fn create_path(path: &Path) {
+    fs::DirBuilder::new().recursive(true).create(path).unwrap();
 }
 
-pub fn get_bsc(root_path: &str, workspace_root: Option<String>) -> String {
-    let subfolder = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => "darwinarm64",
-        ("macos", _) => "darwin",
-        ("linux", _) => "linux",
-        ("windows", _) => "win32",
-        _ => panic!("Unsupported architecture"),
+pub fn create_path_for_path(path: &Path) {
+    fs::DirBuilder::new().recursive(true).create(path).unwrap();
+}
+
+pub fn get_bin_dir() -> PathBuf {
+    let current_exe_path = std::env::current_exe().expect("Could not get current executable path");
+    current_exe_path
+        .parent()
+        .expect("Could not get parent directory of current executable")
+        .to_path_buf()
+}
+
+pub fn get_bsc() -> PathBuf {
+    let bsc_path = match std::env::var("RESCRIPT_BSC_EXE") {
+        Ok(val) => PathBuf::from(val),
+        Err(_) => get_bin_dir().join("bsc.exe"),
     };
 
-    match (
-        PathBuf::from(format!(
-            "{}/node_modules/rescript/{}/bsc.exe",
-            root_path, subfolder
-        ))
-        .canonicalize(),
-        workspace_root.map(|workspace_root| {
-            PathBuf::from(format!(
-                "{}/node_modules/rescript/{}/bsc.exe",
-                workspace_root, subfolder
-            ))
-            .canonicalize()
-        }),
-    ) {
-        (Ok(path), _) => path,
-        (_, Some(Ok(path))) => path,
-        _ => panic!("Could not find bsc.exe"),
-    }
-    .to_string_lossy()
-    .to_string()
+    bsc_path
+        .canonicalize()
+        .expect("Could not get bsc path, did you set environment variable RESCRIPT_BSC_EXE ?")
+        .to_stripped_verbatim_path()
 }
 
 pub fn string_ends_with_any(s: &Path, suffixes: &[&str]) -> bool {
@@ -173,34 +379,49 @@ pub fn string_ends_with_any(s: &Path, suffixes: &[&str]) -> bool {
         .any(|&suffix| s.extension().unwrap_or(&OsString::new()).to_str().unwrap_or("") == suffix)
 }
 
+fn path_to_ast_extension(path: &Path) -> &str {
+    let extension = path.extension().unwrap().to_str().unwrap();
+    if extension.ends_with("i") { ".iast" } else { ".ast" }
+}
+
+pub fn get_ast_path(source_file: &Path) -> PathBuf {
+    let source_path = source_file;
+    let basename = file_path_to_compiler_asset_basename(source_file, &packages::Namespace::NoNamespace);
+    let extension = path_to_ast_extension(source_path);
+
+    source_path
+        .parent()
+        .unwrap()
+        .join(format!("{basename}{extension}"))
+}
+
 pub fn get_compiler_asset(
     package: &packages::Package,
     namespace: &packages::Namespace,
-    source_file: &str,
+    source_file: &Path,
     extension: &str,
-) -> String {
+) -> PathBuf {
     let namespace = match extension {
         "ast" | "iast" => &packages::Namespace::NoNamespace,
         _ => namespace,
     };
-    package.get_build_path()
-        + "/"
-        + &file_path_to_compiler_asset_basename(source_file, namespace)
-        + "."
-        + extension
+    let basename = file_path_to_compiler_asset_basename(source_file, namespace);
+    package
+        .get_ocaml_build_path()
+        .join(format!("{basename}.{extension}"))
 }
 
-pub fn canonicalize_string_path(path: &str) -> Option<String> {
-    return Path::new(path)
+pub fn canonicalize_string_path(path: &str) -> Option<PathBuf> {
+    Path::new(path)
         .canonicalize()
+        .map(StrippedVerbatimPath::to_stripped_verbatim_path)
         .ok()
-        .map(|path| path.to_str().expect("Could not canonicalize").to_string());
 }
 
 pub fn get_bs_compiler_asset(
     package: &packages::Package,
     namespace: &packages::Namespace,
-    source_file: &str,
+    source_file: &Path,
     extension: &str,
 ) -> String {
     let namespace = match extension {
@@ -208,11 +429,13 @@ pub fn get_bs_compiler_asset(
         _ => namespace,
     };
 
-    let dir = std::path::Path::new(&source_file).parent().unwrap();
+    let dir = source_file.parent().unwrap();
+    let basename = file_path_to_compiler_asset_basename(source_file, namespace);
 
-    std::path::Path::new(&package.get_bs_build_path())
+    package
+        .get_build_path()
         .join(dir)
-        .join(file_path_to_compiler_asset_basename(source_file, namespace) + extension)
+        .join(format!("{basename}{extension}"))
         .to_str()
         .unwrap()
         .to_owned()
@@ -224,11 +447,13 @@ pub fn get_namespace_from_module_name(module_name: &str) -> Option<String> {
     split.next().map(|s| s.to_string())
 }
 
-pub fn is_interface_ast_file(file: &str) -> bool {
-    file.ends_with(".iast")
+pub fn is_interface_ast_file(file: &Path) -> bool {
+    file.extension()
+        .map(|extension| extension.eq_ignore_ascii_case("iast"))
+        .unwrap_or(false)
 }
 
-pub fn read_lines(filename: String) -> io::Result<io::Lines<io::BufReader<fs::File>>> {
+pub fn read_lines(filename: &Path) -> io::Result<io::Lines<io::BufReader<fs::File>>> {
     let file = fs::File::open(filename)?;
     Ok(io::BufReader::new(file).lines())
 }
@@ -240,11 +465,11 @@ pub fn get_system_time() -> u128 {
 }
 
 pub fn is_interface_file(extension: &str) -> bool {
-    matches!(extension, "resi" | "mli" | "rei")
+    extension == "resi"
 }
 
 pub fn is_implementation_file(extension: &str) -> bool {
-    matches!(extension, "res" | "ml" | "re")
+    extension == "res"
 }
 
 pub fn is_source_file(extension: &str) -> bool {
@@ -259,14 +484,12 @@ pub fn is_non_exotic_module_name(module_name: &str) -> bool {
     false
 }
 
-pub fn get_extension(path: &str) -> String {
-    let path_buf = PathBuf::from(path);
-    return path_buf
-        .extension()
+pub fn get_extension(path: &Path) -> String {
+    path.extension()
         .expect("Could not get extension")
         .to_str()
         .expect("Could not get extension 2")
-        .to_string();
+        .to_string()
 }
 
 pub fn format_namespaced_module_name(module_name: &str) -> String {
@@ -282,7 +505,7 @@ pub fn format_namespaced_module_name(module_name: &str) -> String {
     }
 }
 
-pub fn compute_file_hash(path: &str) -> Option<blake3::Hash> {
+pub fn compute_file_hash(path: &Path) -> Option<blake3::Hash> {
     match fs::read(path) {
         Ok(str) => Some(blake3::hash(&str)),
         Err(_) => None,
@@ -290,21 +513,15 @@ pub fn compute_file_hash(path: &str) -> Option<blake3::Hash> {
 }
 
 fn has_rescript_config(path: &Path) -> bool {
-    path.join("bsconfig.json").exists() || path.join("rescript.json").exists()
+    path.join("rescript.json").exists() || path.join("bsconfig.json").exists()
 }
 
-pub fn get_workspace_root(package_root: &str) -> Option<String> {
-    std::path::PathBuf::from(&package_root)
-        .parent()
-        .and_then(get_nearest_bsconfig)
-}
-
-// traverse up the directory tree until we find a bsconfig.json, if not return None
-pub fn get_nearest_bsconfig(path_buf: &Path) -> Option<String> {
+// traverse up the directory tree until we find a config.json, if not return None
+pub fn get_nearest_config(path_buf: &Path) -> Option<PathBuf> {
     let mut current_dir = path_buf.to_owned();
     loop {
         if has_rescript_config(&current_dir) {
-            return Some(current_dir.to_string_lossy().to_string());
+            return Some(current_dir);
         }
         match current_dir.parent() {
             None => return None,
@@ -313,21 +530,23 @@ pub fn get_nearest_bsconfig(path_buf: &Path) -> Option<String> {
     }
 }
 
-pub fn get_rescript_version(bsc_path: &str) -> String {
-    let version_cmd = Command::new(bsc_path)
-        .args(["-v"])
-        .output()
-        .expect("failed to find version");
-
-    std::str::from_utf8(&version_cmd.stdout)
-        .expect("Could not read version from rescript")
-        .replace('\n', "")
-        .replace("ReScript ", "")
-}
-
 pub fn read_file(path: &Path) -> Result<String, std::io::Error> {
     let mut file = File::open(path).expect("file not found");
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     Ok(contents)
+}
+
+pub fn get_source_file_from_rescript_file(path: &Path, suffix: &str) -> PathBuf {
+    path.with_extension(
+        // suffix.to_string includes the ., so we need to remove it
+        &suffix.to_string()[1..],
+    )
+}
+
+pub fn is_local_package(workspace_path: &Path, canonical_package_path: &Path) -> bool {
+    canonical_package_path.starts_with(workspace_path)
+        && !canonical_package_path
+            .components()
+            .any(|c| c.as_os_str() == "node_modules")
 }

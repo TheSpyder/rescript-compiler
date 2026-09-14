@@ -1,0 +1,1958 @@
+(* Copyright (C) 2015 - 2016 Bloomberg Finance L.P.
+ * Copyright (C) 2017 - Hongbo Zhang, Authors of ReScript 
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * In addition to the permissions granted to you by the LGPL, you may combine
+ * or link a "work that uses the Library" with a publicly distributed version
+ * of this file to produce a combined library or application, then distribute
+ * that combined work under the terms of your choosing, with no requirement
+ * to comply with the obligations normally placed on you by section 4 of the
+ * LGPL version 3 (or the corresponding section of a later version of the LGPL
+ * should you choose to use a later version).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. *)
+
+module E = Js_exp_make
+module S = Js_stmt_make
+
+let source_map_loc = Js_source_map.source_loc_of_loc
+
+let with_source_loc loc (exp : J.expression) =
+  match (source_map_loc loc, exp.source_loc) with
+  | Some source_loc, None -> {exp with source_loc = Some source_loc}
+  | _ -> exp
+
+let rec source_loc_of_lam (lam : Lambda.t) =
+  match lam with
+  | Lapply {ap_info = {ap_loc}} -> Some ap_loc
+  | Lprim {loc} | Lfunction {loc} -> Some loc
+  | Llet (_, _, arg, body) -> (
+    match source_loc_of_lam arg with
+    | Some _ as loc -> loc
+    | None -> source_loc_of_lam body)
+  | Lletrec (_, body) | Lsequence (_, body) -> source_loc_of_lam body
+  | Lifthenelse (_, then_, _) -> source_loc_of_lam then_
+  | Lstaticcatch (body, _, _) | Ltrywith (body, _, _) -> source_loc_of_lam body
+  | Lstringswitch (_, cases, default) -> (
+    match cases with
+    | (_, body) :: _ -> source_loc_of_lam body
+    | [] -> (
+      match default with
+      | Some body -> source_loc_of_lam body
+      | None -> None))
+  | Lswitch (_, sw) -> (
+    match (sw.sw_consts, sw.sw_blocks, sw.sw_failaction) with
+    | (_, body) :: _, _, _ | _, (_, body) :: _, _ -> source_loc_of_lam body
+    | [], [], Some body -> source_loc_of_lam body
+    | [], [], None -> None)
+  | Lstaticraise (_, args) -> (
+    match args with
+    | arg :: _ -> source_loc_of_lam arg
+    | [] -> None)
+  | Lwhile (_, body)
+  | Lfor (_, _, _, _, body)
+  | Lfor_of (_, _, body)
+  | Lfor_await_of (_, _, body) ->
+    source_loc_of_lam body
+  | Lassign (_, body) -> source_loc_of_lam body
+  | Lvar _ | Lglobal_module _ | Lconst _ | Lbreak | Lcontinue -> None
+
+let source_map_loc_of_lam lam =
+  match source_loc_of_lam lam with
+  | Some loc -> source_map_loc loc
+  | None -> None
+
+let with_statement_source_loc source_loc (stmt : J.statement) =
+  match (source_loc, stmt.source_loc) with
+  | Some source_loc, None -> {stmt with source_loc = Some source_loc}
+  | _ -> stmt
+
+let with_block_source_loc lam block =
+  match block with
+  | [] -> []
+  | stmt :: rest ->
+    with_statement_source_loc (source_map_loc_of_lam lam) stmt :: rest
+
+let args_either_function_or_const (args : Lambda.t list) =
+  Ext_list.for_all args (fun x ->
+      match x with
+      | Lfunction _ | Lconst _ -> true
+      | _ -> false)
+
+(* Whether the callee's arity is known and this call saturates it. The printer
+   uses it to decide whether a wrapper around the call may be eta reduced,
+   which is only sound for a ReScript value of exactly that arity - never for
+   an FFI name, whose wrapper carries argument adaptation. Looked up here
+   rather than stamped on the application by an earlier pass. *)
+let call_info_of_apply (meta : Lam_stats.t) call_transformed_jsx
+    (appinfo : Lambda.lambda_apply) : Js_call_info.t =
+  let saturated =
+    match
+      Lam_arity.extract_arity
+        (Lam_arity_analysis.get_arity meta appinfo.ap_func)
+    with
+    | x :: _ -> x = List.length appinfo.ap_args
+    | [] -> false
+  in
+  if saturated then {call_info = Call_ml; call_transformed_jsx}
+  else {call_info = Call_na; call_transformed_jsx}
+
+let change_tail_type_in_try (x : Lam_compile_context.tail_type) :
+    Lam_compile_context.tail_type =
+  match x with
+  | Maybe_tail_is_return (Tail_with_name _) -> Maybe_tail_is_return Tail_in_try
+  | Not_tail | Maybe_tail_is_return Tail_in_try -> x
+
+let in_staticcatch (x : Lam_compile_context.tail_type) :
+    Lam_compile_context.tail_type =
+  match x with
+  | Maybe_tail_is_return (Tail_with_name ({in_staticcatch = false} as x)) ->
+    Maybe_tail_is_return (Tail_with_name {x with in_staticcatch = true})
+  | _ -> x
+
+(* let change_tail_type_in_static
+   (x : Lam_compile_context.tail_type)
+   : Lam_compile_context.tail_type =
+   match x with
+   | Maybe_tail_is_return (Tail_with_name ({in_staticcatch=false} as z) ) ->
+    Maybe_tail_is_return (Tail_with_name {z with in_staticcatch=true})
+   | Maybe_tail_is_return (Tail_with_name {in_staticcatch=true} )
+   | Not_tail | Maybe_tail_is_return Tail_in_try
+    -> x *)
+
+(* assume outer is [Lstaticcatch] *)
+let rec flat_catches (acc : Lam_compile_context.handler list) (x : Lambda.t) :
+    Lam_compile_context.handler list * Lambda.t =
+  match x with
+  | Lstaticcatch (l, (label, bindings), handler)
+    when acc = []
+         || not
+              (Lam_exit_code.has_exit_code handler (fun exit ->
+                   Ext_list.exists acc (fun x -> x.label = exit))) ->
+    (* #1698 should not crush exit code here without checking *)
+    flat_catches ({label; handler; bindings} :: acc) l
+  | _ -> (acc, x)
+
+let flatten_nested_caches (x : Lambda.t) :
+    Lam_compile_context.handler list * Lambda.t =
+  flat_catches [] x
+
+let morph_declare_to_assign (cxt : Lam_compile_context.t) k =
+  match cxt.continuation with
+  | Declare (kind, did) ->
+    k {cxt with continuation = Assign did} (Some (kind, did))
+  | _ -> k cxt None
+
+let group_apply ~merge_cases cases callback =
+  Ext_list.flat_map
+    (Ext_list.stable_group cases (fun (tag1, lam) (tag2, lam1) ->
+         merge_cases tag1 tag2 && Lambda.eq_approx lam lam1))
+    (fun group -> Ext_list.map_last group callback)
+(* TODO:
+    for expression generation,
+    name, should_return  is not needed,
+    only jmp_table and env needed
+*)
+
+type default_case = Default of Lambda.t | Complete | NonComplete
+
+let default_action ~saturated failaction =
+  match failaction with
+  | None -> Complete
+  | Some x -> if saturated then Complete else Default x
+
+let tag_of_switch_key = function
+  | Lambda.Switch_int _ -> None
+  | Switch_constructor (Constant tag) ->
+    Some (Variant_runtime.to_matchable_tag tag)
+  | Switch_constructor (Block (Untagged {tag = {name}; block_type})) ->
+    Some {name; tag_type = Some (Payload_shape block_type)}
+  | Switch_constructor (Block (Tagged {tag})) ->
+    Some (Variant_runtime.to_matchable_tag tag)
+
+let dispatch_info = function
+  | Lambda.Switch_direct -> (Js_dump_lit.tag, [], [], (false, false, false))
+  | Switch_variant
+      {
+        Variant_runtime.tag_name;
+        block_types;
+        literal_tags;
+        has_null;
+        has_undefined;
+        has_other_literal;
+      } ->
+    ( Option.value tag_name ~default:Js_dump_lit.tag,
+      block_types,
+      literal_tags,
+      (has_null, has_undefined, has_other_literal) )
+
+let no_effects_const = lazy true
+(* let has_effects_const = lazy false *)
+
+(* We drop the ability of cross-compiling
+        the compiler has to be the same running
+*)
+
+type initialization = J.block
+
+(* since it's only for alias, there is no arguments,
+   we should not inline function definition here, even though
+   it is very small
+   TODO: add comment here, we should try to add comment for
+   cross module inlining
+
+   if we do too agressive inlining here:
+
+   if we inline {!List.length} which will call {!A_list.length},
+   then we if we try inline {!A_list.length}, this means if {!A_list}
+   is rebuilt, this module should also be rebuilt,
+
+   But if the build system is content-based, suppose {!A_list}
+   is changed, cmj files in {!List} is unchnaged, however,
+   {!List.length} call {!A_list.length} which is changed, since
+   [ocamldep] only detect that we depend on {!List}, it will not
+   get re-built, then we are screwed.
+
+   This is okay for stamp based build system.
+
+   Another solution is that we add dependencies in the compiler
+
+   -: we should not do functor application inlining in a
+      non-toplevel, it will explode code very quickly
+*)
+
+(* Semantic SCC already ran in [Lambda_scc.bind_rec]. JS still wants
+   functions before values so dummy / updateDummy init is well-ordered. *)
+let functions_before_values (group : (Ident.t * Lambda.t) list) =
+  if
+    Ext_list.for_all group (fun (_, x) ->
+        match x with
+        | Lfunction _ -> true
+        | _ -> false)
+  then group
+  else
+    List.sort
+      (fun (_, lama) (_, lamb) ->
+        match ((lama : Lambda.t), (lamb : Lambda.t)) with
+        | Lfunction _, Lfunction _ -> 0
+        | Lfunction _, _ -> -1
+        | _, Lfunction _ -> 1
+        | _, _ -> 0)
+      group
+
+let compile output_prefix =
+  (* When compiling a read from another module, a nested source path like
+     Other.A.B.make reaches this point as nested module-field reads:
+
+       Pfield "make" (Pfield "B" (Pfield "A" (Lglobal_module Other)))
+
+     Normal compilation does not look up the full path.  It only queries the
+     first field, "A", and then emits the remaining fields as JS property
+     access: Other.A.B.make.  The "A" lookup may include Submodule arity data,
+     but it does not say whether A.B.make has a separate root-level export.
+
+     Hoisted functions need that extra question. For them, query the separate
+     hoisted-values table with an unambiguous key for source path A.B.make. If
+     present, the table returns the root-level JS export name, for example
+     A$B$make. Normal export metadata still lives in the regular .cmj values
+     table. *)
+  let rec extract_field_path segments primitive args =
+    match (primitive, args) with
+    | Lambda.Pfield (_, Fld_module {name}), [Lambda.Lprim {primitive; args; _}]
+      ->
+      extract_field_path (name :: segments) primitive args
+    | Lambda.Pfield (_, Fld_module {name}), [Lambda.Lglobal_module id] ->
+      Some (id, name :: segments)
+    | _ -> None
+  in
+  let hoisted_external_field_name primitive args =
+    match extract_field_path [] primitive args with
+    | Some (id, (_ :: _ :: _ as segments)) ->
+      Ext_option.map (Lam_compile_env.find_hoisted_external_export id segments)
+        (fun name -> (id, name))
+    | Some (_, ([] | [_])) | None -> None
+  in
+  let rec compile_external_field (* Like [List.empty]*)
+      (lamba_cxt : Lam_compile_context.t) (id : Ident.t) name : Js_output.t =
+    match Lam_compile_env.query_external_id_info id name with
+    | {persistent_closed_lambda = Some lam} when Lam_util.not_function lam ->
+      compile_lambda lamba_cxt lam
+    | _ ->
+      Js_output.output_of_expression lamba_cxt.continuation
+        ~no_effects:no_effects_const (E.ml_var_dot id name)
+  (* TODO: how nested module call would behave,
+     In the future, we should keep in track  of if
+     it is fully applied from [Lapply]
+     Seems that the module dependency is tricky..
+     should we depend on [Pervasives] or not?
+
+     we can not do this correctly for the return value,
+     however we can inline the definition in Pervasives
+     TODO:
+     [Pervasives.print_endline]
+     [Pervasives.prerr_endline]
+     @param id external module id
+     @param number the index of the external function
+     @param env typing environment
+     @param args arguments
+  *)
+  (* This can not happen since this id should be already consulted by type checker
+            Worst case
+      {[
+        E.array_index_by_int m pos
+      ]}
+  *)
+
+  (* when module is passed as an argument - unpack to an array
+      for the function, generative module or functor can be a function,
+      however it can not be global -- global can only module
+  *)
+  and compile_external_field_apply (appinfo : Lambda.lambda_apply)
+      (module_id : Ident.t) (field_name : string)
+      (lambda_cxt : Lam_compile_context.t) : Js_output.t =
+    let ident_info =
+      Lam_compile_env.query_external_id_info module_id field_name
+    in
+    let ap_args = appinfo.ap_args in
+    match ident_info.persistent_closed_lambda with
+    | Some (Lfunction ({params; body; _} as lfunction))
+      when Ext_list.same_length params ap_args
+           && Lam_analysis.lfunction_can_be_inlined lfunction ->
+      (* TODO: serialize it when exporting to save compile time *)
+      let _, param_map =
+        Lam_closure.is_closed_with_map Set_ident.empty params body
+      in
+      compile_lambda lambda_cxt
+        (Lam_beta_reduce.propagate_beta_reduce_with_map lambda_cxt.meta
+           param_map params body ap_args)
+    | _ ->
+      let args_code, args =
+        let dummy = ([], []) in
+        if ap_args = [] then dummy
+        else
+          let arg_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+          Ext_list.fold_right ap_args dummy (fun arg_lambda (args_code, args) ->
+              match compile_lambda arg_cxt arg_lambda with
+              | {block; value = Some b} ->
+                (Ext_list.append block args_code, b :: args)
+              | _ -> assert false)
+      in
+
+      let fn = E.ml_var_dot module_id ident_info.name in
+      let expression =
+        E.call
+          ~info:
+            (call_info_of_apply lambda_cxt.meta appinfo.ap_transformed_jsx
+               appinfo)
+          fn args
+      in
+      let expression = with_source_loc appinfo.ap_info.ap_loc expression in
+      Js_output.output_of_block_and_expression lambda_cxt.continuation args_code
+        expression
+  (*
+    The second return values are values which need to be wrapped using
+   [update_dummy]
+
+   Invariant:  jmp_table can not across function boundary,
+       here we share env
+
+*)
+  and compile_recursive_let ~all_bindings (cxt : Lam_compile_context.t)
+      (id : Ident.t) (arg : Lambda.t) : Js_output.t * initialization =
+    match arg with
+    | Lfunction
+        {
+          params;
+          body;
+          attr = {return_unit; async; one_unit_arg; directive};
+          loc;
+        } ->
+      (* TODO: Think about recursive value
+         {[
+           let rec v = ref (fun _ ...
+                           )
+         ]}
+          [Alias] may not be exact
+      *)
+      let params = if one_unit_arg then [] else params in
+      let ret : Lam_compile_context.return_label =
+        {
+          id;
+          params;
+          immutable_mask = Array.make (List.length params) true;
+          new_params = Map_ident.empty;
+          triggered = false;
+        }
+      in
+      let output =
+        compile_lambda
+          {
+            cxt with
+            continuation =
+              EffectCall
+                (Maybe_tail_is_return
+                   (Tail_with_name {label = Some ret; in_staticcatch = false}));
+            jmp_table = Lam_compile_context.empty_handler_map;
+            switch_depth = 0;
+            loop_stack = [];
+          }
+          body
+      in
+      let result =
+        if ret.triggered then
+          let body_block = Js_output.output_as_block output in
+          E.ocaml_fun
+          (* TODO:  save computation of length several times
+             Here we always create [ocaml_fun],
+             it will be renamed into [method]
+             when it is detected by a primitive
+          *)
+            ~return_unit ~async ~one_unit_arg ?directive
+            ~immutable_mask:ret.immutable_mask
+            (Ext_list.map params (fun x ->
+                 Map_ident.find_default ret.new_params x x))
+            [
+              S.while_ E.true_
+                (Map_ident.fold ret.new_params body_block
+                   (fun old new_param acc ->
+                     S.define_variable ~kind:Alias old (E.var new_param) :: acc));
+            ]
+        else
+          (* TODO:  save computation of length several times *)
+          E.ocaml_fun params
+            (Js_output.output_as_block output)
+            ~return_unit ~async ~one_unit_arg ?directive
+      in
+      let result = with_source_loc loc result in
+      ( Js_output.output_of_expression
+          (Declare (Alias, id))
+          result
+          ~no_effects:(lazy (Lam_analysis.no_side_effects arg)),
+        [] )
+    | Lprim {primitive = Pmakeblock _; args}
+      when args_either_function_or_const args ->
+      (compile_lambda {cxt with continuation = Declare (Alias, id)} arg, [])
+    (* case of lazy blocks, treat it as usual *)
+    | Lprim
+        {
+          primitive =
+            Pmakeblock
+              (( Blk_record _
+               | Blk_constructor {num_nonconst = 1}
+               | Blk_record_inlined {num_nonconst = 1} ) as tag_info);
+          args = ls;
+        }
+      when Ext_list.for_all ls (fun x ->
+               match x with
+               | Lvar pid ->
+                 Ident.same pid id
+                 || not
+                    @@ Ext_list.exists all_bindings (fun (other, _) ->
+                        Ident.same other pid)
+               | Lconst _ -> true
+               | _ -> false) ->
+      (* capture cases like for {!Queue}
+         {[let rec cell = { content = x; next = cell} ]}
+         #1716: be careful not to optimize such cases:
+         {[ let rec a = { b} and b = { a} ]} they are indeed captured
+         and need to be declared first
+         TODO: this should be inlined based on tag info
+      *)
+      ( Js_output.make
+          (S.define_variable ~kind:Variable id (E.dummy_obj tag_info)
+          :: Ext_list.mapi ls (fun i x ->
+              S.exp
+                (Js_of_lam_block.set_field
+                   (match tag_info with
+                   | Blk_record {fields = xs} -> Fld_record_set (fst xs.(i))
+                   | Blk_record_inlined xs ->
+                     Fld_record_inline_set (fst xs.fields.(i))
+                   | Blk_constructor p -> (
+                     let is_cons = p.name = Literals.cons in
+                     match (is_cons, i) with
+                     | true, 0 -> Fld_record_inline_set Literals.hd
+                     | true, 1 -> Fld_record_inline_set Literals.tl
+                     | _, _ -> Fld_record_inline_set ("_" ^ string_of_int i))
+                   | _ -> assert false)
+                   (E.var id) (Int32.of_int i)
+                   (match x with
+                   | Lvar lid -> E.var lid
+                   | Lconst x -> Lam_compile_const.translate x
+                   | _ -> assert false)))),
+        [] )
+    | Lprim {primitive = Pmakeblock tag_info} -> (
+      (* Lconst should not appear here if we do [scc]
+         optimization, since it's faked recursive value,
+         however it would affect scope issues, we have to declare it first
+      *)
+      match compile_lambda {cxt with continuation = NeedValue Not_tail} arg with
+      | {block = b; value = Some v} ->
+        (* TODO: check recursive value ..
+            could be improved for simple cases
+        *)
+        ( Js_output.make
+            (Ext_list.append b
+               [
+                 S.exp
+                   (E.runtime_call Primitive_modules.object_ "updateDummy"
+                      [E.var id; v]);
+               ]),
+          [S.define_variable ~kind:Variable id (E.dummy_obj tag_info)] )
+      | _ -> assert false)
+    | _ ->
+      (* pathological case:
+          fail to capture taill call?
+         {[ let rec a =
+              if  g > 30 then .. fun () -> a ()
+         ]}
+
+          Neither  below is not allowed in ocaml:
+         {[
+           let rec v =
+             if sum 0 10 > 20 then
+               1::v
+             else 2:: v
+         ]}
+         {[
+           let rec v =
+             if sum 0 10 > 20 then
+               fun _ -> print_endline "hi"; v ()
+             else
+               fun _-> print_endline "hey"; v ()
+         ]}
+      *)
+      (compile_lambda {cxt with continuation = Declare (Alias, id)} arg, [])
+  and compile_recursive_lets_aux cxt (id_args : (Ident.t * Lambda.t) list) :
+      Js_output.t =
+    (* #1716 *)
+    let output_code, ids =
+      Ext_list.fold_right id_args (Js_output.dummy, [])
+        (fun (ident, arg) (acc, ids) ->
+          let code, declare_ids =
+            compile_recursive_let ~all_bindings:id_args cxt ident arg
+          in
+          (Js_output.append_output code acc, Ext_list.append declare_ids ids))
+    in
+    match ids with
+    | [] -> output_code
+    | _ -> Js_output.append_output (Js_output.make ids) output_code
+  and compile_recursive_lets cxt id_args : Js_output.t =
+    match id_args with
+    | [] -> Js_output.dummy
+    | _ -> compile_recursive_lets_aux cxt (functions_before_values id_args)
+  and compile_general_cases :
+      'a.
+      make_exp:('a -> J.expression) ->
+      eq_exp:
+        ('a option -> J.expression -> 'a option -> J.expression -> J.expression) ->
+      cxt:Lam_compile_context.t ->
+      switch:
+        (?default:J.block ->
+        ?declaration:Lambda.let_kind * Ident.t ->
+        _ ->
+        ('a * J.case_clause) list ->
+        J.statement) ->
+      switch_exp:J.expression ->
+      default:default_case ->
+      ?merge_cases:('a -> 'a -> bool) ->
+      ('a * Lambda.t) list ->
+      J.block =
+   fun (type a) ~(make_exp : a -> J.expression)
+       ~(eq_exp :
+          a option -> J.expression -> a option -> J.expression -> J.expression)
+       ~(cxt : Lam_compile_context.t)
+       ~(switch :
+          ?default:J.block ->
+          ?declaration:Lambda.let_kind * Ident.t ->
+          _ ->
+          (a * J.case_clause) list ->
+          J.statement) ~(switch_exp : J.expression) ~(default : default_case)
+       ?(merge_cases = fun _ _ -> true) (cases : (a * Lambda.t) list) ->
+    let output_block_with_source_loc cxt lam =
+      compile_lambda cxt lam |> Js_output.output_as_block
+      |> with_block_source_loc lam
+    in
+    match (cases, default) with
+    | [], Default lam -> output_block_with_source_loc cxt lam
+    | [], (Complete | NonComplete) -> []
+    | [(_, lam)], Complete ->
+      (* To take advantage of such optimizations,
+          when we generate code using switch,
+          we should always have a default,
+          otherwise the compiler engine would think that
+          it's also complete
+      *)
+      output_block_with_source_loc cxt lam
+    | [(id, lam)], NonComplete ->
+      morph_declare_to_assign cxt (fun cxt define ->
+          [
+            S.if_ ?declaration:define
+              (eq_exp None switch_exp (Some id) (make_exp id))
+              (output_block_with_source_loc cxt lam);
+          ])
+    | [(id, lam)], Default x | [(id, lam); (_, x)], Complete ->
+      morph_declare_to_assign cxt (fun cxt define ->
+          let else_block = output_block_with_source_loc cxt x in
+          let then_block = output_block_with_source_loc cxt lam in
+          [
+            S.if_ ?declaration:define
+              (eq_exp None switch_exp (Some id) (make_exp id))
+              then_block ~else_:else_block;
+          ])
+    | _, _ ->
+      (* TODO: this is not relevant to switch case
+          however, in a subset of switch-case if we can analysis
+          its branch are the same, we can propogate which
+          might encourage better inlining strategey
+          ---
+          TODO: grouping can be delayed untile JS IR
+
+          see #2413
+          In general, we know it is last call,
+          there is no need to print [break];
+          But we need make sure the last call lambda does not
+          have `(exit ..)` due to we pass should_return from Lstaticcath downwards
+          Since this is a rough approximation, some `(exit ..)` does not destroy
+          last call property, we use exiting should_break to improve preciseness
+          (and it indeed help catch
+         - tailcall or not does not matter, if it is the tailcall
+            break still should not be printed (it will be continuned)
+           TOOD: disabled temporarily since it's not perfect yet *)
+      morph_declare_to_assign cxt (fun cxt declaration ->
+          (* Exclude cases that are the same as the default if the default is defined *)
+          let cases =
+            match default with
+            | Default lam ->
+              List.filter
+                (fun (_, lam1) -> not (Lambda.eq_approx lam lam1))
+                cases
+            | _ -> cases
+          in
+          let switch_cxt = Lam_compile_context.enter_switch cxt in
+          let default =
+            match default with
+            | Complete -> None
+            | NonComplete -> None
+            | Default lam -> (
+              let statements = output_block_with_source_loc switch_cxt lam in
+              match statements with
+              | [] -> None
+              | _ -> Some statements)
+          in
+          let body =
+            group_apply ~merge_cases cases (fun last (switch_case, lam) ->
+                if last then
+                  (* merge and shared *)
+                  let switch_body, should_break =
+                    Js_output.to_break_block (compile_lambda switch_cxt lam)
+                  in
+                  let switch_body = with_block_source_loc lam switch_body in
+                  let should_break =
+                    if
+                      not
+                      @@ Lam_compile_context.continuation_is_return
+                           cxt.continuation
+                    then should_break
+                    else should_break && Lam_exit_code.has_exit lam
+                  in
+                  ( switch_case,
+                    J.
+                      {
+                        switch_body;
+                        should_break;
+                        comment = None;
+                        source_loc = source_map_loc_of_lam lam;
+                      } )
+                else
+                  ( switch_case,
+                    {
+                      switch_body = [];
+                      should_break = false;
+                      comment = None;
+                      source_loc = source_map_loc_of_lam lam;
+                    } ))
+            (* TODO: we should also group default *)
+            (* The last clause does not need [break]
+                common break through, *)
+          in
+
+          [switch ?default ?declaration switch_exp body])
+  and use_compile_literal_cases table =
+    List.fold_right
+      (fun (key, lam) acc ->
+        match (tag_of_switch_key key, acc) with
+        | Some {Variant_runtime.tag_type = Some t}, Some string_table ->
+          Some ((t, lam) :: string_table)
+        | Some {name; tag_type = None}, Some string_table ->
+          Some ((Literal (String name), lam) :: string_table)
+        | _, _ -> None)
+      table (Some [])
+  and compile_cases ?(untagged = false) ?(has_null_case = false) ~cxt
+      ~(switch_exp : E.t) ?(default = NonComplete) ?(block_cases = []) cases :
+      initialization =
+    match use_compile_literal_cases cases with
+    | Some string_cases ->
+      if untagged then
+        compile_untagged_cases ~cxt ~switch_exp ~block_cases ~default
+          ~has_null_case string_cases
+      else compile_string_cases ~cxt ~switch_exp ~default string_cases
+    | None ->
+      cases
+      |> compile_general_cases
+           ~make_exp:(function
+             | Lambda.Switch_int i -> E.small_int i
+             | Switch_constructor _ -> assert false)
+           ~eq_exp:(fun _ x _ y -> E.int_equal x y)
+           ~cxt
+           ~switch:(fun ?default ?declaration e clauses ->
+             S.int_switch ?default ?declaration e
+               (List.map
+                  (fun (key, clause) ->
+                    match key with
+                    | Lambda.Switch_int i -> (i, clause)
+                    | Switch_constructor _ -> assert false)
+                  clauses))
+           ~switch_exp ~default
+  and compile_switch (switch_arg : Lambda.t) (sw : Lambda.lambda_switch)
+      (lambda_cxt : Lam_compile_context.t) =
+    (* TODO: if default is None, we can do some optimizations
+        Use switch vs if/then/else
+
+        TODO: switch based optimiztion - hash, group, or using array,
+              also if last statement is throw -- should we drop remaining
+              statement?
+    *)
+    let ({
+           sw_consts_full;
+           sw_consts;
+           sw_blocks_full;
+           sw_blocks;
+           sw_failaction;
+           sw_dispatch;
+         }
+          : Lambda.lambda_switch) =
+      sw
+    in
+    let sw_num_default =
+      default_action ~saturated:sw_consts_full sw_failaction
+    in
+    let sw_blocks_default =
+      default_action ~saturated:sw_blocks_full sw_failaction
+    in
+    let tag_name, block_cases, literal_cases, has_null_undefined_other =
+      dispatch_info sw_dispatch
+    in
+    let untagged = block_cases <> [] in
+    let compile_whole (cxt : Lam_compile_context.t) =
+      match
+        compile_lambda {cxt with continuation = NeedValue Not_tail} switch_arg
+      with
+      | {value = None; _} -> assert false
+      | {block; value = Some e} -> (
+        block
+        @
+        if sw_consts_full && sw_consts = [] then
+          compile_cases ~block_cases ~untagged ~cxt
+            ~switch_exp:(if untagged then e else E.tag ~name:tag_name e)
+            ~default:sw_blocks_default sw_blocks
+        else if sw_blocks_full && sw_blocks = [] then
+          compile_cases ~cxt ~switch_exp:e ~block_cases ~default:sw_num_default
+            sw_consts
+        else
+          (* [e] will be used twice  *)
+          let dispatch e =
+            let is_a_literal_case () =
+              if untagged then E.is_a_literal_case ~literal_cases ~block_cases e
+              else E.is_int_tag ~has_null_undefined_other e
+            in
+            let eq_default d1 d2 =
+              match (d1, d2) with
+              | Default lam1, Default lam2 -> Lambda.eq_approx lam1 lam2
+              | Complete, Complete -> true
+              | NonComplete, NonComplete -> true
+              | _ -> false
+            in
+            if
+              untagged
+              && List.length sw_consts = 0
+              && eq_default sw_num_default sw_blocks_default
+            then
+              let has_null_case = List.mem Variant_runtime.Null literal_cases in
+              compile_cases ~untagged ~cxt
+                ~switch_exp:(if untagged then e else E.tag ~name:tag_name e)
+                ~block_cases ~has_null_case ~default:sw_blocks_default sw_blocks
+            else
+              [
+                S.if_ (is_a_literal_case ())
+                  (compile_cases ~cxt ~switch_exp:e ~block_cases
+                     ~default:sw_num_default sw_consts)
+                  ~else_:
+                    (compile_cases ~untagged ~cxt
+                       ~switch_exp:
+                         (if untagged then e else E.tag ~name:tag_name e)
+                       ~block_cases ~default:sw_blocks_default sw_blocks);
+              ]
+          in
+          match e.expression_desc with
+          | J.Var _ -> dispatch e
+          | _ ->
+            let v = Ext_ident.create_tmp () in
+            (* Necessary avoid duplicated computation*)
+            S.define_variable ~kind:Variable v e :: dispatch (E.var v))
+    in
+    match lambda_cxt.continuation with
+    (* Needs declare first *)
+    | NeedValue _ ->
+      (* Necessary since switch is a statement, we need they return
+         the same value for different branches -- can be optmized
+         when branches are minimial (less than 2)
+      *)
+      let v = Ext_ident.create_tmp () in
+      Js_output.make
+        (S.declare_variable ~kind:Variable v
+        :: compile_whole {lambda_cxt with continuation = Assign v})
+        ~value:(E.var v)
+    | Declare (kind, id) ->
+      Js_output.make
+        (S.declare_variable ~kind id
+        :: compile_whole {lambda_cxt with continuation = Assign id})
+    | EffectCall _ | Assign _ -> Js_output.make (compile_whole lambda_cxt)
+  and compile_string_cases ~cxt ~switch_exp ~default cases : initialization =
+    cases
+    |> compile_general_cases ~make_exp:E.tag_type
+         ~eq_exp:(fun _ x _ y -> E.string_equal x y)
+         ~cxt
+         ~switch:(fun ?default ?declaration e clauses ->
+           S.string_switch ?default ?declaration e clauses)
+         ~switch_exp ~default
+  and compile_untagged_cases ~cxt ~switch_exp ~default ~block_cases
+      ~has_null_case cases =
+    let mk_eq (i : Variant_runtime.tag_type option) x j y =
+      let check =
+        match (i, j) with
+        | Some tag_type, _ ->
+          Ast_untagged_variants.Dynamic_checks.add_runtime_type_check ~tag_type
+            ~has_null_case ~block_cases (Expr x) (Expr y)
+        | _, Some tag_type ->
+          Ast_untagged_variants.Dynamic_checks.add_runtime_type_check ~tag_type
+            ~has_null_case ~block_cases (Expr y) (Expr x)
+        | _ -> Ast_untagged_variants.Dynamic_checks.( == ) (Expr x) (Expr y)
+      in
+      E.emit_check check
+    in
+    let tag_is_not_typeof = function
+      | Variant_runtime.Payload_shape (InstanceType _) -> true
+      | _ -> false
+    in
+    let clause_is_not_typeof (tag, _) = tag_is_not_typeof tag in
+    let switch ?default ?declaration e clauses =
+      let not_typeof_clauses, typeof_clauses =
+        List.partition clause_is_not_typeof clauses
+      in
+      let has_object_typeof =
+        List.exists
+          (function
+            | Variant_runtime.Payload_shape ObjectType, _ -> true
+            | _ -> false)
+          typeof_clauses
+      in
+      let clauses_have_array_case =
+        List.exists
+          (function
+            | Variant_runtime.Payload_shape (InstanceType Array), _ -> true
+            | _ -> false)
+          not_typeof_clauses
+      in
+      let type_has_array_case =
+        List.exists
+          (function
+            | Variant_runtime.InstanceType Array -> true
+            | _ -> false)
+          block_cases
+      in
+      (* When there's an ObjectType typeof case, null and arrays can
+         incorrectly match it (typeof null === typeof [] === "object").
+         Guard against them when they should fall through to default. *)
+      let needs_null_guard = has_object_typeof && has_null_case in
+      let needs_array_guard =
+        has_object_typeof && type_has_array_case && not clauses_have_array_case
+      in
+      let rec build_if_chain remaining_clauses =
+        match remaining_clauses with
+        | ( Variant_runtime.Payload_shape (InstanceType instance_type),
+            {J.switch_body} )
+          :: rest ->
+          S.if_
+            (E.emit_check (IsInstanceOf (instance_type, Expr e)))
+            switch_body
+            ~else_:[build_if_chain rest]
+        | _ -> (
+          let typeof_switch () =
+            S.string_switch ?default ?declaration (E.typeof e) typeof_clauses
+          in
+          let guard =
+            match (needs_null_guard, needs_array_guard) with
+            | true, true -> Some (E.or_ (E.is_null e) (E.is_array e))
+            | true, false -> Some (E.is_null e)
+            | false, true -> Some (E.is_array e)
+            | false, false -> None
+          in
+          match (guard, default) with
+          | Some guard, Some default_body ->
+            S.if_ guard default_body ~else_:[typeof_switch ()]
+          | Some guard, None -> S.if_ (E.not guard) [typeof_switch ()]
+          | None, _ -> typeof_switch ())
+      in
+      build_if_chain not_typeof_clauses
+    in
+    let merge_cases tag1 tag2 =
+      (* only merge typeof cases, as instanceof cases are pulled out into if-then-else *)
+      not (tag_is_not_typeof tag1 || tag_is_not_typeof tag2)
+    in
+    cases
+    |> compile_general_cases ~make_exp:E.tag_type ~eq_exp:mk_eq ~cxt ~switch
+         ~switch_exp ~default ~merge_cases
+  and compile_stringswitch l cases default (lambda_cxt : Lam_compile_context.t)
+      =
+    (* TODO might better optimization according to the number of cases
+        Be careful: we should avoid multiple evaluation of l,
+        The [gen] can be elimiated when number of [cases] is less than 3
+    *)
+    let cases =
+      cases |> List.map (fun (s, l) -> (Variant_runtime.Literal (String s), l))
+    in
+    match
+      compile_lambda {lambda_cxt with continuation = NeedValue Not_tail} l
+    with
+    | {value = None} -> assert false
+    | {block; value = Some e} -> (
+      (* when should_return is true -- it's passed down
+         otherwise it's ok *)
+      let default =
+        match default with
+        | Some x -> Default x
+        | None -> Complete
+      in
+      match lambda_cxt.continuation with
+      (* TODO: can be avoided when cases are less than 3 *)
+      | NeedValue _ ->
+        let v = Ext_ident.create_tmp () in
+        Js_output.make
+          (Ext_list.append block
+             (compile_string_cases
+                ~cxt:{lambda_cxt with continuation = Declare (Variable, v)}
+                ~switch_exp:e ~default cases))
+          ~value:(E.var v)
+      | _ ->
+        Js_output.make
+          (Ext_list.append block
+             (compile_string_cases ~cxt:lambda_cxt ~switch_exp:e ~default cases))
+      )
+  (*
+         This should be optimized in lambda layer
+         (let (match/1038 = (apply g/1027 x/1028))
+         (catch
+         (stringswitch match/1038
+         case "aabb": 0
+         case "bbc": 1
+         default: (exit 1))
+         with (1) 2))
+      *)
+  and compile_staticraise i (largs : Lambda.t list)
+      (lambda_cxt : Lam_compile_context.t) =
+    (* [i] is the jump table, [largs] is the arguments passed to [Lstaticcatch]*)
+    match Lam_compile_context.find_exn lambda_cxt i with
+    | {exit_id; bindings; order_id} ->
+      Ext_list.fold_right2 largs bindings
+        (Js_output.make
+           (if order_id >= 0 then [S.assign exit_id (E.small_int order_id)]
+            else []))
+        (fun larg bind acc ->
+          let new_output =
+            match larg with
+            | Lvar id -> Js_output.make [S.assign bind (E.var id)]
+            | _ ->
+              (* TODO: should be Assign -- Assign is an optimization *)
+              compile_lambda {lambda_cxt with continuation = Assign bind} larg
+          in
+          Js_output.append_output new_output acc)
+  (* Invariant: exit_code can not be reused
+      (catch l with (32)
+      (handler))
+      32 should not be used in another catch
+      Invariant:
+      This is true in current ocaml compiler
+      currently exit only appears in should_return position relative to staticcatch
+      if not we should use ``javascript break`` or ``continue``
+     if exit_code_id == code
+       handler -- ids are not useful, since
+       when compiling `largs` we will do the binding there
+     - when exit_code is undefined internally,
+         it should PRESERVE  ``tail`` property
+     - if it uses `staticraise` only once
+         or handler is minimal, we can inline
+     - always inline also seems to be ok, but it might bloat the code
+     - another common scenario is that we have nested catch
+         (catch (catch (catch ..))
+       checkout example {!Digest.file}, you can not inline handler there,
+       we can spot such patten and use finally there?
+     {[
+       let file filename =
+         let ic = open_in_bin filename in
+         match channel ic (-1) with
+         | d -> close_in ic; d
+         | exception e -> close_in ic; raise e
+
+     ]}
+  *)
+  and compile_staticcatch (lam : Lambda.t) (lambda_cxt : Lam_compile_context.t)
+      =
+    let code_table, body = flatten_nested_caches lam in
+    let exit_id = Ext_ident.create_tmp ~name:"exit" () in
+    match (lambda_cxt.continuation, code_table) with
+    | ( EffectCall
+          (Maybe_tail_is_return (Tail_with_name {in_staticcatch = false}) as
+           tail_type),
+        [code_table] )
+    (* tail position and only one exit code *)
+      when Lam_compile_context.no_static_raise_in_handler code_table ->
+      let jmp_table, handler =
+        Lam_compile_context.add_pseudo_jmp lambda_cxt.jmp_table exit_id
+          code_table
+      in
+      let new_cxt =
+        {
+          lambda_cxt with
+          jmp_table;
+          continuation = EffectCall (in_staticcatch tail_type);
+        }
+      in
+
+      let lbody = compile_lambda new_cxt body in
+      let declares =
+        Ext_list.map code_table.bindings (fun x ->
+            S.declare_variable ~kind:Variable x)
+      in
+      Js_output.append_output (Js_output.make declares)
+        (Js_output.append_output lbody (compile_lambda lambda_cxt handler))
+    | _ -> (
+      let exit_expr = E.var exit_id in
+      let jmp_table, handlers =
+        Lam_compile_context.add_jmps lambda_cxt.jmp_table exit_id code_table
+      in
+      let handlers =
+        List.map (fun (i, handler) -> (Lambda.Switch_int i, handler)) handlers
+      in
+
+      (* Declaration First, body and handler have the same value *)
+      let declares =
+        S.define_variable ~kind:Variable exit_id E.zero_int_literal
+        (* we should always make it zero here, since [zero] is reserved in our mapping*)
+        :: Ext_list.flat_map code_table (fun {bindings} ->
+            Ext_list.map bindings (fun x -> S.declare_variable ~kind:Variable x))
+      in
+      match lambda_cxt.continuation with
+      (* could be optimized when cases are less than 3 *)
+      | NeedValue _ ->
+        let v = Ext_ident.create_tmp () in
+        let new_cxt = {lambda_cxt with jmp_table; continuation = Assign v} in
+        let lbody = compile_lambda new_cxt body in
+        Js_output.append_output
+          (Js_output.make (S.declare_variable ~kind:Variable v :: declares))
+          (Js_output.append_output lbody
+             (Js_output.make
+                (compile_cases ~cxt:new_cxt ~switch_exp:exit_expr handlers)
+                ~value:(E.var v)))
+      | Declare (kind, id) (* declare first this we will do branching*) ->
+        let declares = S.declare_variable ~kind id :: declares in
+        let new_cxt = {lambda_cxt with jmp_table; continuation = Assign id} in
+        let lbody = compile_lambda new_cxt body in
+        Js_output.append_output (Js_output.make declares)
+          (Js_output.append_output lbody
+             (Js_output.make
+                (compile_cases ~cxt:new_cxt ~switch_exp:exit_expr handlers)))
+      (* place holder -- tell the compiler that
+         we don't know if it's complete
+      *)
+      | EffectCall tail_type as cont ->
+        let continuation =
+          let new_tail_type = in_staticcatch tail_type in
+          if new_tail_type == tail_type then cont else EffectCall new_tail_type
+        in
+        let new_cxt = {lambda_cxt with jmp_table; continuation} in
+        let lbody = compile_lambda new_cxt body in
+        Js_output.append_output (Js_output.make declares)
+          (Js_output.append_output lbody
+             (Js_output.make
+                (compile_cases ~cxt:new_cxt ~switch_exp:exit_expr handlers)))
+      | Assign _ ->
+        let new_cxt = {lambda_cxt with jmp_table} in
+        let lbody = compile_lambda new_cxt body in
+        Js_output.append_output (Js_output.make declares)
+          (Js_output.append_output lbody
+             (Js_output.make
+                (compile_cases ~cxt:new_cxt ~switch_exp:exit_expr handlers))))
+  and compile_sequand (l : Lambda.t) (r : Lambda.t)
+      (lambda_cxt : Lam_compile_context.t) =
+    if Lam_compile_context.continuation_is_return lambda_cxt.continuation then
+      compile_lambda lambda_cxt (Lambda.sequand l r)
+    else
+      let new_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+      match compile_lambda new_cxt l with
+      | {value = None} -> assert false
+      | {block = l_block; value = Some l_expr} -> (
+        match compile_lambda new_cxt r with
+        | {value = None} -> assert false
+        | {block = []; value = Some r_expr} ->
+          Js_output.output_of_block_and_expression lambda_cxt.continuation
+            l_block (E.and_ l_expr r_expr)
+        | {block = r_block; value = Some r_expr} -> (
+          match lambda_cxt.continuation with
+          | Assign v ->
+            (* Refernece Js_output.output_of_block_and_expression *)
+            Js_output.make
+              (l_block
+              @ [
+                  S.if_ l_expr
+                    (r_block @ [S.assign v r_expr])
+                    ~else_:[S.assign v E.false_];
+                ])
+          | Declare (_kind, v) ->
+            (* Refernece Js_output.output_of_block_and_expression *)
+            Js_output.make
+              (l_block
+              @ [
+                  S.define_variable ~kind:Variable v E.false_;
+                  S.if_ l_expr (r_block @ [S.assign v r_expr]);
+                ])
+          | EffectCall _ | NeedValue _ ->
+            let v = Ext_ident.create_tmp () in
+            Js_output.make
+              ((S.define_variable ~kind:Variable v E.false_ :: l_block)
+              @ [S.if_ l_expr (r_block @ [S.assign v r_expr])])
+              ~value:(E.var v)))
+  and compile_sequor (l : Lambda.t) (r : Lambda.t)
+      (lambda_cxt : Lam_compile_context.t) =
+    if Lam_compile_context.continuation_is_return lambda_cxt.continuation then
+      compile_lambda lambda_cxt (Lambda.sequor l r)
+    else
+      let new_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+      match compile_lambda new_cxt l with
+      | {value = None} -> assert false
+      | {block = l_block; value = Some l_expr} -> (
+        match compile_lambda new_cxt r with
+        | {value = None} -> assert false
+        | {block = []; value = Some r_expr} ->
+          let exp = E.or_ l_expr r_expr in
+          Js_output.output_of_block_and_expression lambda_cxt.continuation
+            l_block exp
+        | {block = r_block; value = Some r_expr} -> (
+          match lambda_cxt.continuation with
+          | Assign v ->
+            (* Reference Js_output.output_of_block_and_expression *)
+            Js_output.make
+              (l_block
+              @ [
+                  S.if_ (E.not l_expr)
+                    (r_block @ [S.assign v r_expr])
+                    ~else_:[S.assign v E.true_];
+                ])
+          | Declare (_kind, v) ->
+            Js_output.make
+              (l_block
+              @ [
+                  S.define_variable ~kind:Variable v E.true_;
+                  S.if_ (E.not l_expr) (r_block @ [S.assign v r_expr]);
+                ])
+          | EffectCall _ | NeedValue _ ->
+            let v = Ext_ident.create_tmp () in
+            Js_output.make
+              (l_block
+              @ [
+                  S.define_variable ~kind:Variable v E.true_;
+                  S.if_ (E.not l_expr) (r_block @ [S.assign v r_expr]);
+                ])
+              ~value:(E.var v)))
+  (* Note that ``J.While(expression * statement )``
+              idealy if ocaml expression does not need fresh variables, we can generate
+              while expression, here we generate for statement, leave optimization later.
+              (Sine OCaml expression can be really complex..)
+  *)
+  and compile_while (predicate : Lambda.t) (body : Lambda.t)
+      (lambda_cxt : Lam_compile_context.t) =
+    match
+      compile_lambda
+        {lambda_cxt with continuation = NeedValue Not_tail}
+        predicate
+    with
+    | {value = None} -> assert false
+    | {block; value = Some e} ->
+      (* st = NeedValue -- this should be optimized and never happen *)
+      let e =
+        match block with
+        | [] -> e
+        | _ -> E.of_block block ~e
+      in
+      let loop_cxt, loop_frame = Lam_compile_context.push_loop lambda_cxt in
+      let body_block =
+        Js_output.output_as_block
+        @@ compile_lambda
+             {loop_cxt with continuation = EffectCall Not_tail}
+             body
+      in
+      (* The label stays absent for ordinary loops and is filled in lazily if a
+         nested switch emits break/continue for this loop. *)
+      let block = [S.while_ ?label:loop_frame.label e body_block] in
+      Js_output.output_of_block_and_expression lambda_cxt.continuation block
+        E.unit
+  (* all non-tail
+      TODO: check semantics should start, finish be executed each time in both
+       ocaml and js?, also check evaluation order..
+       in ocaml id is not in the scope of finish, so it should be safe here
+
+       for i  = 0 to (print_int 3; 10) do print_int i done;;
+       3012345678910- : unit = ()
+
+      for(var i =  0 ; i < (console.log(i),10); ++i){console.log('hi')}
+      print i each time, so they are different semantics...
+  *)
+  and compile_for (id : J.for_ident) (start : Lambda.t) (finish : Lambda.t)
+      (direction : Js_op.direction_flag) (body : Lambda.t)
+      (lambda_cxt : Lam_compile_context.t) =
+    let new_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+    let block =
+      match (compile_lambda new_cxt start, compile_lambda new_cxt finish) with
+      | {value = None}, _ | _, {value = None} -> assert false
+      | {block = b1; value = Some e1}, {block = b2; value = Some e2} -> (
+        (* order b1 -- (e1 -- b2 -- e2)
+            in most cases we can shift it into such scenarios
+            b1, b2, [e1, e2]
+           - b2 is Empty
+           - e1 is pure
+             we can guarantee e1 is pure, if it literally contains a side effect call,
+             put it in the beginning
+        *)
+        let loop_cxt, loop_frame = Lam_compile_context.push_loop lambda_cxt in
+        let block_body =
+          Js_output.output_as_block
+            (compile_lambda
+               {loop_cxt with continuation = EffectCall Not_tail}
+               body)
+        in
+        let make_for for_ident_expression =
+          (* See compile_while above: only loops that need labeled control flow
+             end up with a concrete JS label. *)
+          S.for_ ?label:loop_frame.label for_ident_expression e2 id direction
+            block_body
+        in
+        match (b1, b2) with
+        | _, [] -> Ext_list.append_one b1 (make_for (Some e1))
+        | _, _
+          when Js_analyzer.no_side_effect_expression e1
+               (*
+                     e1 > b2 > e2
+                     re-order
+                     b2 > e1 > e2
+                   *)
+          ->
+          Ext_list.append b1 (Ext_list.append_one b2 (make_for (Some e1)))
+        | _, _ ->
+          Ext_list.append b1
+            (S.define_variable ~kind:Variable id e1
+            :: Ext_list.append_one b2 (make_for None)))
+    in
+    Js_output.output_of_block_and_expression lambda_cxt.continuation block
+      E.unit
+  and compile_for_of (id : J.for_ident) (iterable : Lambda.t) (body : Lambda.t)
+      (lambda_cxt : Lam_compile_context.t) =
+    let new_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+    let emitted_id =
+      if Set_ident.mem (Lambda_traverse.free_variables body) id then id
+      else Ext_ident.create_tmp ~name:"_for_of" ()
+    in
+    let block =
+      match compile_lambda new_cxt iterable with
+      | {value = None} -> assert false
+      | {block = b1; value = Some e1} ->
+        let loop_cxt, loop_frame = Lam_compile_context.push_loop lambda_cxt in
+        let block_body =
+          Js_output.output_as_block
+            (compile_lambda
+               {loop_cxt with continuation = EffectCall Not_tail}
+               body)
+        in
+        Ext_list.append b1
+          [S.for_of ?label:loop_frame.label e1 emitted_id block_body]
+    in
+    Js_output.output_of_block_and_expression lambda_cxt.continuation block
+      E.unit
+  and compile_for_await_of (id : J.for_ident) (iterable : Lambda.t)
+      (body : Lambda.t) (lambda_cxt : Lam_compile_context.t) =
+    let new_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+    let emitted_id =
+      if Set_ident.mem (Lambda_traverse.free_variables body) id then id
+      else Ext_ident.create_tmp ~name:"_for_await_of" ()
+    in
+    let block =
+      match compile_lambda new_cxt iterable with
+      | {value = None} -> assert false
+      | {block = b1; value = Some e1} ->
+        let loop_cxt, loop_frame = Lam_compile_context.push_loop lambda_cxt in
+        let block_body =
+          Js_output.output_as_block
+            (compile_lambda
+               {loop_cxt with continuation = EffectCall Not_tail}
+               body)
+        in
+        Ext_list.append b1
+          [S.for_await_of ?label:loop_frame.label e1 emitted_id block_body]
+    in
+    Js_output.output_of_block_and_expression lambda_cxt.continuation block
+      E.unit
+  and compile_assign id (lambda : Lambda.t) (lambda_cxt : Lam_compile_context.t)
+      =
+    let block =
+      match lambda with
+      | _ -> (
+        match
+          compile_lambda
+            {lambda_cxt with continuation = NeedValue Not_tail}
+            lambda
+        with
+        | {value = None} -> assert false
+        | {block; value = Some v} -> Ext_list.append_one block (S.assign id v))
+    in
+    Js_output.output_of_block_and_expression lambda_cxt.continuation block
+      E.unit
+  (*
+         tail --> should be renamed to `shouldReturn`
+          in most cases ``shouldReturn`` == ``tail``, however, here is not,
+          should return, but it is not a tail call in js
+          (* could be optimized using javascript style exceptions *)
+   {[
+     {try
+        {var $js=g(x);}
+          catch(exn){if(exn=Not_found){var $js=0;}else{throw exn;}}
+     return h($js);
+   }
+   ]}
+*)
+  and compile_trywith lam id catch (lambda_cxt : Lam_compile_context.t) =
+    let aux (with_context : Lam_compile_context.t)
+        (body_context : Lam_compile_context.t) =
+      (* should_return is passed down
+         #1701, try should prevent tailcall *)
+      [
+        S.try_
+          (Js_output.output_as_block (compile_lambda body_context lam))
+          ~with_:
+            (id, Js_output.output_as_block (compile_lambda with_context catch));
+      ]
+    in
+    match lambda_cxt.continuation with
+    | Declare (kind, id) ->
+      let context = {lambda_cxt with continuation = Assign id} in
+      Js_output.make (S.declare_variable ~kind id :: aux context context)
+    | Assign _ -> Js_output.make (aux lambda_cxt lambda_cxt)
+    | NeedValue _ ->
+      let v = Ext_ident.create_tmp () in
+      let context = {lambda_cxt with continuation = Assign v} in
+      Js_output.make
+        (S.declare_variable ~kind:Variable v :: aux context context)
+        ~value:(E.var v)
+    | EffectCall return_type ->
+      let new_return_type = change_tail_type_in_try return_type in
+      if new_return_type == return_type then
+        Js_output.make (aux lambda_cxt lambda_cxt)
+      else
+        Js_output.make
+          (aux lambda_cxt
+             {lambda_cxt with continuation = EffectCall new_return_type})
+  and compile_ifthenelse (predicate : Lambda.t) (t_branch : Lambda.t)
+      (f_branch : Lambda.t) (lambda_cxt : Lam_compile_context.t) =
+    match
+      compile_lambda
+        {lambda_cxt with continuation = NeedValue Not_tail}
+        predicate
+    with
+    | {value = None} -> assert false
+    | {block = b; value = Some e} -> (
+      match lambda_cxt.continuation with
+      | NeedValue _ -> (
+        match
+          ( compile_lambda lambda_cxt t_branch,
+            compile_lambda lambda_cxt f_branch )
+        with
+        | {block = []; value = Some out1}, {block = []; value = Some out2} ->
+          (* speical optimization *)
+          Js_output.make b ~value:(E.econd e out1 out2)
+        | _, _ -> (
+          (* we can not reuse -- here we need they have the same name,
+                 TODO: could be optimized by inspecting assigment statement *)
+          let id = Ext_ident.create_tmp () in
+          let assign_cxt = {lambda_cxt with continuation = Assign id} in
+          match
+            ( compile_lambda assign_cxt t_branch,
+              compile_lambda assign_cxt f_branch )
+          with
+          | out1, out2 ->
+            Js_output.make
+              (Ext_list.append
+                 (S.declare_variable ~kind:Variable id :: b)
+                 [
+                   S.if_ e
+                     (Js_output.output_as_block out1)
+                     ~else_:(Js_output.output_as_block out2);
+                 ])
+              ~value:(E.var id)))
+      | Declare (kind, id) -> (
+        let declare_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+        match
+          ( compile_lambda declare_cxt t_branch,
+            compile_lambda declare_cxt f_branch )
+        with
+        | {block = []; value = Some out1}, {block = []; value = Some out2} ->
+          (* Invariant: should_return is false*)
+          Js_output.make
+            (Ext_list.append_one b
+               (S.define_variable ~kind id (E.econd e out1 out2)))
+        | _, _ ->
+          Js_output.make
+            (Ext_list.append_one b
+               (S.if_ ~declaration:(kind, id) e
+                  (Js_output.output_as_block
+                  @@ compile_lambda
+                       {lambda_cxt with continuation = Assign id}
+                       t_branch)
+                  ~else_:
+                    (Js_output.output_as_block
+                    @@ compile_lambda
+                         {lambda_cxt with continuation = Assign id}
+                         f_branch))))
+      | Assign _ ->
+        let then_output =
+          Js_output.output_as_block (compile_lambda lambda_cxt t_branch)
+        in
+        let else_output =
+          Js_output.output_as_block (compile_lambda lambda_cxt f_branch)
+        in
+        Js_output.make
+          (Ext_list.append_one b (S.if_ e then_output ~else_:else_output))
+      | EffectCall should_return -> (
+        let context1 =
+          {lambda_cxt with continuation = NeedValue should_return}
+        in
+        match
+          ( should_return,
+            compile_lambda context1 t_branch,
+            compile_lambda context1 f_branch )
+        with
+        (* see PR#83 *)
+        | ( Not_tail,
+            {block = []; value = Some out1},
+            {block = []; value = Some out2} ) -> (
+          match
+            ( Js_exp_make.remove_pure_sub_exp out1,
+              Js_exp_make.remove_pure_sub_exp out2 )
+          with
+          | None, None -> Js_output.make (Ext_list.append_one b (S.exp e))
+          (* FIX #1762 *)
+          | Some out1, Some out2 ->
+            Js_output.make b ~value:(E.econd e out1 out2)
+          | Some out1, None ->
+            Js_output.make (Ext_list.append_one b (S.if_ e [S.exp out1]))
+          | None, Some out2 ->
+            Js_output.make
+              (Ext_list.append_one b (S.if_ (E.not e) [S.exp out2])))
+        | Not_tail, {block = []; value = Some out1}, _ ->
+          (* assert branch
+              TODO: here we re-compile two branches since
+              its context is different -- could be improved
+          *)
+          if Js_analyzer.no_side_effect_expression out1 then
+            Js_output.make
+              (Ext_list.append b
+                 [
+                   S.if_ (E.not e)
+                     (Js_output.output_as_block
+                     @@ compile_lambda lambda_cxt f_branch);
+                 ])
+          else
+            Js_output.make
+              (Ext_list.append b
+                 [
+                   S.if_ e
+                     (Js_output.output_as_block
+                     @@ compile_lambda lambda_cxt t_branch)
+                     ~else_:
+                       (Js_output.output_as_block
+                       @@ compile_lambda lambda_cxt f_branch);
+                 ])
+        | Not_tail, _, {block = []; value = Some out2} ->
+          let else_ =
+            if Js_analyzer.no_side_effect_expression out2 then None
+            else
+              Some
+                (Js_output.output_as_block (compile_lambda lambda_cxt f_branch))
+          in
+          Js_output.make
+            (Ext_list.append_one b
+               (S.if_ e
+                  (Js_output.output_as_block
+                     (compile_lambda lambda_cxt t_branch))
+                  ?else_))
+        | ( Maybe_tail_is_return _,
+            {block = []; value = Some out1},
+            {block = []; value = Some out2} ) ->
+          Js_output.make
+            (Ext_list.append_one b (S.return_stmt (E.econd e out1 out2)))
+            ~output_finished:True
+        | _, _, _ ->
+          let then_output =
+            Js_output.output_as_block (compile_lambda lambda_cxt t_branch)
+          in
+          let else_output =
+            Js_output.output_as_block (compile_lambda lambda_cxt f_branch)
+          in
+          Js_output.make
+            (Ext_list.append_one b (S.if_ e then_output ~else_:else_output))))
+  and compile_apply (appinfo : Lambda.lambda_apply)
+      (lambda_cxt : Lam_compile_context.t) =
+    match appinfo with
+    (* External function call: it can not be tailcall in this case*)
+    | {
+     ap_func =
+       Lprim {primitive = Pfield (_, fld_info); args = [Lglobal_module id]; _};
+    } -> (
+      match fld_info with
+      | Fld_module {name} ->
+        compile_external_field_apply appinfo id name lambda_cxt
+      | _ -> assert false)
+    | _ -> (
+      (* TODO: ---
+         1. check arity, can be simplified for pure expression
+         2. no need create names
+      *)
+      let ap_func = appinfo.ap_func in
+      let new_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+      let[@warning "-8" (* non-exhaustive pattern*)] args_code, fn_code :: args
+          =
+        Ext_list.fold_right (ap_func :: appinfo.ap_args) ([], [])
+          (fun x (args_code, fn_code) ->
+            match compile_lambda new_cxt x with
+            | {block; value = Some b} ->
+              (Ext_list.append block args_code, b :: fn_code)
+            | {value = None} -> assert false)
+      in
+      match (ap_func, lambda_cxt.continuation) with
+      | ( Lvar fn_id,
+          ( EffectCall (Maybe_tail_is_return (Tail_with_name {label = Some ret}))
+          | NeedValue (Maybe_tail_is_return (Tail_with_name {label = Some ret}))
+            ) )
+        when Ident.same ret.id fn_id ->
+        ret.triggered <- true;
+        (* Here we mark [finished] true, since the continuation
+            does not make sense any more (due to that we have [continue])
+            TODO: [finished] is not a meaningful name, we should use [truncate]
+            to mean the following statement should be truncated
+        *)
+        (*
+                actually, there is no easy way to determin
+                if the argument depends on an expresion, since
+                it can be a function, then it may depend on anything
+                http://caml.inria.fr/pub/ml-archives/caml-list/2005/02/5727b4ecaaef6a7a350c9d98f5f68432.en.html
+                http://caml.inria.fr/pub/ml-archives/caml-list/2005/02/fe9bc4e23e6dc8c932c8ab34240ff195.en.html
+
+            *)
+        (* TODO: use [fold]*)
+        let _, assigned_params, new_params =
+          let args = if ret.params = [] then [] else args in
+          Ext_list.fold_left2 ret.params args (0, [], Map_ident.empty)
+            (fun param arg (i, assigns, new_params) ->
+              match arg with
+              | {expression_desc = Var (Id x); _} when Ident.same x param ->
+                (i + 1, assigns, new_params)
+              | _ ->
+                let new_param, m =
+                  match Map_ident.find_opt ret.new_params param with
+                  | None ->
+                    ret.immutable_mask.(i) <- false;
+                    let v = Ext_ident.create ("_" ^ param.name) in
+                    (v, Map_ident.add new_params param v)
+                  | Some v -> (v, new_params)
+                in
+                (i + 1, (new_param, arg) :: assigns, m))
+        in
+        ret.new_params <-
+          Map_ident.disjoint_merge_exn new_params ret.new_params (fun _ _ _ ->
+              assert false);
+        let block =
+          Ext_list.map_append assigned_params
+            [S.continue_ ()]
+            (fun (param, arg) -> S.assign param arg)
+        in
+        (* Note true and continue needed to be handled together*)
+        Js_output.make ~output_finished:True (Ext_list.append args_code block)
+      | _ ->
+        Js_output.output_of_block_and_expression lambda_cxt.continuation
+          args_code
+          (with_source_loc appinfo.ap_info.ap_loc
+             (E.call
+                ~info:
+                  (call_info_of_apply lambda_cxt.meta appinfo.ap_transformed_jsx
+                     appinfo)
+                fn_code args)))
+  and compile_prim (prim_info : Lambda.prim_info)
+      (lambda_cxt : Lam_compile_context.t) =
+    let compile_primitive_default primitive args loc =
+      let args_block, args_expr =
+        if args = [] then ([], [])
+        else
+          let new_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+          Ext_list.split_map args (fun x ->
+              match compile_lambda new_cxt x with
+              | {block; value = Some b} -> (block, b)
+              | {value = None} -> assert false)
+      in
+      let args_code : J.block = List.concat args_block in
+      let exp =
+        (* TODO: all can be done in [compile_primitive] *)
+        Lam_compile_primitive.translate output_prefix loc lambda_cxt primitive
+          args_expr
+      in
+      Js_output.output_of_block_and_expression lambda_cxt.continuation args_code
+        (with_source_loc loc exp)
+    in
+    match prim_info with
+    | {primitive = Pfield (_, Fld_module _); _} -> (
+      match hoisted_external_field_name prim_info.primitive prim_info.args with
+      | Some (id, hoisted_name) ->
+        Js_output.output_of_expression lambda_cxt.continuation
+          ~no_effects:no_effects_const
+          (E.ml_var_dot id hoisted_name)
+      | None -> (
+        match prim_info with
+        | {primitive = Pfield (_, fld_info); args = [Lglobal_module id]; _} -> (
+          (* should be before Lglobal_global *)
+          match fld_info with
+          | Fld_module {name = field} ->
+            compile_external_field lambda_cxt id field
+          | _ -> assert false)
+        | _ ->
+          compile_primitive_default prim_info.primitive prim_info.args
+            prim_info.loc))
+    | {primitive = Praise; args = [e]; loc} -> (
+      match
+        compile_lambda {lambda_cxt with continuation = NeedValue Not_tail} e
+      with
+      | {block; value = Some v} ->
+        let stmt =
+          with_statement_source_loc (source_map_loc loc) (S.throw_stmt v)
+        in
+        Js_output.make
+          (Ext_list.append_one block stmt)
+          ~value:E.undefined ~output_finished:True
+      (* FIXME -- breaks invariant when NeedValue, reason is that js [throw] is statement
+         while ocaml it's an expression, we should remove such things in lambda optimizations
+      *)
+      | {value = None} -> assert false)
+    | {primitive = Psequand; args = [l; r]; _} -> compile_sequand l r lambda_cxt
+    | {primitive = Psequor; args = [l; r]} -> compile_sequor l r lambda_cxt
+    | {primitive = Pdebugger; loc; _} ->
+      (* [%debugger] guarantees that the expression does not matter
+         TODO: make it even safer *)
+      let stmt =
+        with_statement_source_loc (source_map_loc loc) (S.debugger_stmt ())
+      in
+      Js_output.output_of_block_and_expression lambda_cxt.continuation [stmt]
+        E.unit
+      (* TODO:
+         check the arity of fn before wrapping it
+         we need mark something that such eta-conversion can not be simplified in some cases
+      *)
+    | {primitive = Pjs_object_get property; args = [obj]} -> (
+      (* property read: obj["height"] *)
+      match
+        compile_lambda {lambda_cxt with continuation = NeedValue Not_tail} obj
+      with
+      | {value = None} -> assert false
+      | {block; value = Some b} ->
+        let blocks, ret =
+          if block = [] then ([], E.dot b property)
+          else
+            match Js_ast_util.named_expression b with
+            | None -> (block, E.dot b property)
+            | Some (x, b) ->
+              (Ext_list.append_one block x, E.dot (E.var b) property)
+        in
+        Js_output.output_of_block_and_expression lambda_cxt.continuation blocks
+          ret)
+    | {primitive = Pjs_object_set property; args = [obj; setter_val]} -> (
+      (* property write: obj["height"] = v *)
+      let need_value_no_return_cxt =
+        {lambda_cxt with continuation = NeedValue Not_tail}
+      in
+      let obj_output = compile_lambda need_value_no_return_cxt obj in
+      let arg_output = compile_lambda need_value_no_return_cxt setter_val in
+      let cont obj_block arg_block obj_code =
+        Js_output.output_of_block_and_expression lambda_cxt.continuation
+          (match obj_code with
+          | None -> Ext_list.append obj_block arg_block
+          | Some obj_code -> Ext_list.append obj_block (obj_code :: arg_block))
+      in
+      match (obj_output, arg_output) with
+      | {value = None}, _ | _, {value = None} -> assert false
+      | ( {block = obj_block; value = Some obj},
+          {block = arg_block; value = Some value} ) -> (
+        match Js_ast_util.named_expression obj with
+        | None ->
+          cont obj_block arg_block None
+            (E.seq (E.assign (E.dot obj property) value) E.unit)
+        | Some (obj_code, obj) ->
+          cont obj_block arg_block (Some obj_code)
+            (E.seq (E.assign (E.dot (E.var obj) property) value) E.unit)))
+    | {primitive = Pjs_object_get _ | Pjs_object_set _; args} -> assert false
+    | {primitive = Pjs_fn_method; args = args_lambda} -> (
+      match args_lambda with
+      | [Lfunction {params; body; attr = {return_unit; async}; loc}] ->
+        Js_output.output_of_block_and_expression lambda_cxt.continuation []
+          (with_source_loc loc
+             (E.method_ ~async ~return_unit params
+                (* Invariant:  jmp_table can not across function boundary,
+                   here we share env
+                *)
+                (Js_output.output_as_block
+                   (compile_lambda
+                      {
+                        lambda_cxt with
+                        continuation =
+                          EffectCall
+                            (Maybe_tail_is_return
+                               (Tail_with_name
+                                  {label = None; in_staticcatch = false}));
+                        jmp_table = Lam_compile_context.empty_handler_map;
+                      }
+                      body))))
+      | _ -> assert false)
+    | {primitive = Pjs_object_create labels; args} ->
+      let args_block, args_expr =
+        if args = [] then ([], [])
+        else
+          let new_cxt = {lambda_cxt with continuation = NeedValue Not_tail} in
+          Ext_list.split_map args (fun x ->
+              match compile_lambda new_cxt x with
+              | {block; value = Some b} -> (block, b)
+              | {value = None} -> assert false)
+      in
+      let block, exp =
+        Lam_compile_external_obj.assemble_obj_args labels args_expr
+      in
+      Js_output.output_of_block_and_expression lambda_cxt.continuation
+        (Ext_list.concat_append args_block block)
+        exp
+    | {primitive; args; loc} -> compile_primitive_default primitive args loc
+  and collect_dup_overrides (copy_id : Ident.t) (lam : Lambda.t)
+      (acc : (Lambda.set_field_dbg_info * Lambda.t) list) :
+      (Lambda.set_field_dbg_info * Lambda.t) list option =
+    match lam with
+    | Lsequence
+        ( Lprim
+            {primitive = Psetfield (_, fld_info); args = [Lvar id'; value]; _},
+          rest )
+      when Ident.same id' copy_id ->
+      collect_dup_overrides copy_id rest ((fld_info, value) :: acc)
+    | Lvar id' when Ident.same id' copy_id -> Some acc
+    | _ -> None
+  and try_compile_record_spread (lambda_cxt : Lam_compile_context.t)
+      (id : Ident.t) (arg : Lambda.t) (body : Lambda.t) : Js_output.t option =
+    match arg with
+    | Lprim {primitive = Pduprecord; args = [init]; loc} -> (
+      match collect_dup_overrides id body [] with
+      | None -> None
+      | Some overrides ->
+        let need_value_cxt =
+          {lambda_cxt with continuation = NeedValue Not_tail}
+        in
+        let init_output = compile_lambda need_value_cxt init in
+        let init_val =
+          match init_output.value with
+          | Some v -> v
+          | None -> assert false
+        in
+        let blocks, props =
+          List.fold_left
+            (fun (blocks, props)
+                 ((fld_info : Lambda.set_field_dbg_info), value_lam) ->
+              let val_output = compile_lambda need_value_cxt value_lam in
+              let val_val =
+                match val_output.value with
+                | Some v -> v
+                | None -> assert false
+              in
+              let name =
+                match fld_info with
+                | Fld_record_set name
+                | Fld_record_inline_set name
+                | Fld_record_extension_set name ->
+                  name
+              in
+              (blocks @ val_output.block, (Js_op.Lit name, val_val) :: props))
+            (init_output.block, []) (List.rev overrides)
+        in
+        Some
+          (Js_output.output_of_block_and_expression lambda_cxt.continuation
+             blocks
+             (with_source_loc loc (E.obj ~dup:init_val props))))
+    | _ -> None
+  and compile_lambda (lambda_cxt : Lam_compile_context.t) (cur_lam : Lambda.t) :
+      Js_output.t =
+    match cur_lam with
+    | Lfunction
+        {
+          params;
+          body;
+          attr = {return_unit; async; one_unit_arg; directive};
+          loc;
+        } ->
+      Js_output.output_of_expression lambda_cxt.continuation
+        ~no_effects:no_effects_const
+        (with_source_loc loc
+           (E.ocaml_fun params ~return_unit ~async ~one_unit_arg ?directive
+              (* Invariant:  jmp_table can not across function boundary,
+                 here we share env
+              *)
+              (Js_output.output_as_block
+                 (compile_lambda
+                    {
+                      lambda_cxt with
+                      continuation =
+                        EffectCall
+                          (Maybe_tail_is_return
+                             (Tail_with_name
+                                {label = None; in_staticcatch = false}));
+                      jmp_table = Lam_compile_context.empty_handler_map;
+                      switch_depth = 0;
+                      loop_stack = [];
+                    }
+                    body))))
+    | Lapply appinfo -> compile_apply appinfo lambda_cxt
+    | Llet (let_kind, id, arg, body) -> (
+      match try_compile_record_spread lambda_cxt id arg body with
+      | Some output -> output
+      | None ->
+        (* Order matters..  see comment below in [Lletrec] *)
+        let args_code =
+          compile_lambda
+            {lambda_cxt with continuation = Declare (let_kind, id)}
+            arg
+        in
+        Js_output.append_output args_code (compile_lambda lambda_cxt body))
+    | Lletrec (id_args, body) ->
+      (* There is a bug in our current design,
+         it requires compile args first (register that some objects are jsidentifiers)
+         and compile body wiht such effect.
+         So here we should compile [id_args] first, then [body] later.
+         Note it has some side effect over cache number as well, mostly the value of
+         [Caml_primitive["caml_get_public_method"](x,hash_tab, number)]
+
+         To fix this,
+         1. scan the lambda layer first, register js identifier before proceeding
+         2. delay the method call into javascript ast
+      *)
+      let v = compile_recursive_lets lambda_cxt id_args in
+      Js_output.append_output v (compile_lambda lambda_cxt body)
+    | Lvar id ->
+      Js_output.output_of_expression lambda_cxt.continuation
+        ~no_effects:no_effects_const (E.var id)
+    | Lconst c ->
+      Js_output.output_of_expression lambda_cxt.continuation
+        ~no_effects:no_effects_const
+        (Lam_compile_const.translate c)
+    | Lglobal_module i ->
+      (* introduced by
+         1. {[ include Array --> let include  = Array  ]}
+         2. inline functor application
+      *)
+      Js_output.output_of_block_and_expression lambda_cxt.continuation []
+        (E.ml_module_as_var i)
+    | Lprim prim_info -> compile_prim prim_info lambda_cxt
+    | Lsequence (l1, l2) ->
+      let output_l1 =
+        compile_lambda {lambda_cxt with continuation = EffectCall Not_tail} l1
+      in
+      let output_l2 = compile_lambda lambda_cxt l2 in
+      Js_output.append_output output_l1 output_l2
+    | Lifthenelse (predicate, t_branch, f_branch) ->
+      compile_ifthenelse predicate t_branch f_branch lambda_cxt
+    | Lstringswitch (l, cases, default) ->
+      compile_stringswitch l cases default lambda_cxt
+    | Lswitch (switch_arg, sw) -> compile_switch switch_arg sw lambda_cxt
+    | Lstaticraise (i, largs) -> compile_staticraise i largs lambda_cxt
+    | Lstaticcatch _ -> compile_staticcatch cur_lam lambda_cxt
+    | Lbreak -> (
+      match lambda_cxt.loop_stack with
+      | [] -> assert false
+      | frame :: _ ->
+        let stmt =
+          if lambda_cxt.switch_depth > 0 then
+            (* In JS, break inside a switch breaks the switch unless we target
+               the enclosing loop explicitly. *)
+            let label =
+              Lam_compile_context.ensure_loop_label lambda_cxt frame
+            in
+            S.break_ ~label ()
+          else S.break_ ()
+        in
+        (* [break] is accepted inside braced expressions like [{break}], so keep
+           the usual NeedValue invariant even though JS only has a statement form. *)
+        Js_output.make [stmt] ~value:E.undefined ~output_finished:True)
+    | Lcontinue -> (
+      match lambda_cxt.loop_stack with
+      | [] -> assert false
+      | frame :: _ ->
+        let stmt =
+          if lambda_cxt.switch_depth > 0 then
+            (* Keep continue consistent with break by routing nested-switch loop
+               control through the same labeled path. *)
+            let label =
+              Lam_compile_context.ensure_loop_label lambda_cxt frame
+            in
+            S.continue_ ~label ()
+          else S.continue_ ()
+        in
+        Js_output.make [stmt] ~value:E.undefined ~output_finished:True)
+    | Lwhile (p, body) -> compile_while p body lambda_cxt
+    | Lfor (id, start, finish, direction, body) -> (
+      match (direction, finish) with
+      | ( Upto,
+          Lprim
+            {primitive = Psubint; args = [new_finish; Lconst (Const_int 1l)]} )
+        ->
+        compile_for id start new_finish Up body lambda_cxt
+      | _ ->
+        compile_for id start finish
+          (if direction = Upto then Upto else Downto)
+          body lambda_cxt)
+    | Lfor_of (id, iterable, body) -> compile_for_of id iterable body lambda_cxt
+    | Lfor_await_of (id, iterable, body) ->
+      compile_for_await_of id iterable body lambda_cxt
+    | Lassign (id, lambda) -> compile_assign id lambda lambda_cxt
+    | Ltrywith (lam, id, catch) ->
+      (* generate documentation *)
+      compile_trywith lam id catch lambda_cxt
+  in
+
+  (compile_recursive_lets, compile_lambda)
+
+let compile_recursive_lets ~output_prefix = fst (compile output_prefix)
+let compile_lambda ~output_prefix = snd (compile output_prefix)

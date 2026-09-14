@@ -1,0 +1,24 @@
+(dirs
+ bsc
+ common
+ core
+ depends
+ ext
+ flow_parser
+ frontend
+ gentype
+ jsoo
+ ml
+ sync
+ syntax)
+
+(env
+ (release
+  (ocamlopt_flags
+   (:standard -O3 -unbox-closures)))
+ (static
+  (ocamlopt_flags
+   (:standard -O3 -unbox-closures)))
+ (browser
+  (ocamlopt_flags
+   (:standard -O3 -unbox-closures))))

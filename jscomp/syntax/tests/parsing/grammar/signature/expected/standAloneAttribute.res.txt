@@ -1,6 +1,0 @@
-module type StandaloneAttribute  =
-  sig
-    [@@@standaloneAttribute ]
-    [@@@standaloneAttribute withPayload]
-    [@@@standaloneAttribute ((Function$ (fun x -> x))[@res.arity 1])]
-  end

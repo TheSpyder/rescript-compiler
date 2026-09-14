@@ -1,0 +1,43 @@
+module(Three)
+module(Three: X_int)
+
+let three = module(Three: X_int)
+let three = module(Three)
+
+let x = @attr module(Foo)
+let x = @attr module(Foo: FirstClass)
+
+module(Teenager)[0]
+module(Teenager)->age->Console.log
+module(Teenager)[0]->Console.log
+module(Teenager)->age->isAdult ? Console.log("has responsibilities")  : Console.log("can play in the playground")
+module(Streets)[0]->isExpensive ? Console.log("big money") : Console.log("affordable")
+
+
+let () = {
+  module(Teenager)->age->Console.log
+}
+let () = {
+  module(Teenager)[0]
+}
+let () = {
+  module(Teenager)->age->isAdult ? Console.log("has responsibilities")  : Console.log("can play in the playground")
+}
+let () = {
+  module(Streets)[0]->isExpensive ? Console.log("big money") : Console.log("affordable")
+}
+
+let () = {
+  let a = 1
+  let b = 2
+  module(Teenager)[0]
+  module(Teenager)->age->Console.log
+}
+
+
+let () = {
+  let a = 1
+  let b = 2
+  module(Teenager)->age->Console.log
+  module(Teenager)[0]->age->isAdult ? Console.log("has responsibilities")  : Console.log("can play in the playground")
+}

@@ -1,0 +1,15 @@
+
+  Syntax error!
+  syntax_tests/data/parsing/recovery/pattern/record.res:2:15-17
+
+  1 │ switch x {
+  2 │ | {a, b: {x, y => ()
+  3 │ | {...x, y} => ()
+  4 │ | {a, _, b} => ()
+
+  Did you forget a `}` here?
+
+;;match x with
+  | { a; b = { x; y } } -> ()
+  | { y; ...x } -> ()
+  | { a; b } -> ()

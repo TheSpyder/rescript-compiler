@@ -1,0 +1,13 @@
+{
+  "name": "@tests/analysis",
+  "private": true,
+  "scripts": {
+    "build": "rescript build",
+    "clean": "rescript clean"
+  },
+  "dependencies": {
+    "@rescript/belt": "workspace:^",
+    "@rescript/react": "workspace:^",
+    "rescript": "workspace:^"
+  }
+}

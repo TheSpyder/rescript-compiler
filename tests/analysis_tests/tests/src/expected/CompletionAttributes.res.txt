@@ -1,0 +1,317 @@
+Complete src/CompletionAttributes.res 0:8
+Attribute id:modu:[0:3->0:8] label:modu
+Completable: Cdecorator(modu)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "",
+    "documentation": {
+      "kind": "markdown",
+      "value": "The `@module` decorator is used to bind to a JavaScript module.\n\n[Read more and see examples in the documentation](https://rescript-lang.org/syntax-lookup#module-decorator)."
+    },
+    "insertText": "module(\"$0\")",
+    "insertTextFormat": 2,
+    "kind": 4,
+    "label": "module",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 3:12
+XXX Not found!
+Completable: CdecoratorPayload(module=)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  { "detail": "Package", "kind": 4, "label": "@rescript/belt", "tags": [] },
+  { "detail": "Package", "kind": 4, "label": "@rescript/react", "tags": [] },
+  { "detail": "Local file", "kind": 4, "label": "./test.json", "tags": [] },
+  { "detail": "Local file", "kind": 4, "label": "./tst.js", "tags": [] }
+]
+
+Complete src/CompletionAttributes.res 6:7
+Attribute id:js:[6:3->6:7] label:@js
+Completable: Cdecorator(@js)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "",
+    "documentation": {
+      "kind": "markdown",
+      "value": "The `@@jsxConfig` decorator is used to change the config for JSX on the fly.\n\n[Read more and see examples in the documentation](https://rescript-lang.org/docs/manual/latest/jsx#file-level-configuration)."
+    },
+    "insertText": "jsxConfig({$0})",
+    "insertTextFormat": 2,
+    "kind": 4,
+    "label": "jsxConfig",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 9:16
+XXX Not found!
+Completable: JsxConfig
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "int",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nversion?: int\n```\n\n```rescript\ntype jsxConfig = {version: int, module_: string, mode: string}\n```"
+    },
+    "kind": 5,
+    "label": "version",
+    "tags": []
+  },
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nmodule_?: string\n```\n\n```rescript\ntype jsxConfig = {version: int, module_: string, mode: string}\n```"
+    },
+    "kind": 5,
+    "label": "module_",
+    "tags": []
+  },
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nmode?: string\n```\n\n```rescript\ntype jsxConfig = {version: int, module_: string, mode: string}\n```"
+    },
+    "kind": 5,
+    "label": "mode",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 12:17
+XXX Not found!
+Completable: JsxConfig
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nmodule_?: string\n```\n\n```rescript\ntype jsxConfig = {version: int, module_: string, mode: string}\n```"
+    },
+    "kind": 5,
+    "label": "module_",
+    "tags": []
+  },
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nmode?: string\n```\n\n```rescript\ntype jsxConfig = {version: int, module_: string, mode: string}\n```"
+    },
+    "kind": 5,
+    "label": "mode",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 15:25
+XXX Not found!
+Completable: JsxConfig
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "string",
+    "insertText": "\"$0\"",
+    "insertTextFormat": 2,
+    "kind": 12,
+    "label": "\"\"",
+    "sortText": "A",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 18:29
+XXX Not found!
+Completable: JsxConfig
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "int",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nversion?: int\n```\n\n```rescript\ntype jsxConfig = {version: int, module_: string, mode: string}\n```"
+    },
+    "kind": 5,
+    "label": "version",
+    "tags": []
+  },
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nmode?: string\n```\n\n```rescript\ntype jsxConfig = {version: int, module_: string, mode: string}\n```"
+    },
+    "kind": 5,
+    "label": "mode",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 21:12
+XXX Not found!
+Completable: CdecoratorPayload(moduleWithImportAttributes)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nfrom?: string\n```\n\n```rescript\ntype moduleConfig = {from: string, with: string}\n```"
+    },
+    "kind": 5,
+    "label": "from",
+    "tags": []
+  },
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nwith?: string\n```\n\n```rescript\ntype moduleConfig = {from: string, with: string}\n```"
+    },
+    "kind": 5,
+    "label": "with",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 24:17
+XXX Not found!
+Completable: CdecoratorPayload(moduleWithImportAttributes)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "importAttributesConfig",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\ntype importAttributesConfig = {type_: string}\n```"
+    },
+    "insertText": "{$0}",
+    "insertTextFormat": 2,
+    "kind": 12,
+    "label": "{}",
+    "sortText": "A",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 27:19
+XXX Not found!
+Completable: CdecoratorPayload(moduleWithImportAttributes)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\ntype_?: string\n```\n\n```rescript\ntype importAttributesConfig = {type_: string}\n```"
+    },
+    "kind": 5,
+    "label": "type_",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 30:19
+XXX Not found!
+Completable: CdecoratorPayload(module=)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  { "detail": "Package", "kind": 4, "label": "@rescript/belt", "tags": [] },
+  { "detail": "Package", "kind": 4, "label": "@rescript/react", "tags": [] },
+  { "detail": "Local file", "kind": 4, "label": "./test.json", "tags": [] },
+  { "detail": "Local file", "kind": 4, "label": "./tst.js", "tags": [] }
+]
+
+Complete src/CompletionAttributes.res 33:17
+XXX Not found!
+Completable: CdecoratorPayload(module=)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  { "detail": "Package", "kind": 4, "label": "@rescript/belt", "tags": [] },
+  { "detail": "Package", "kind": 4, "label": "@rescript/react", "tags": [] },
+  { "detail": "Local file", "kind": 4, "label": "./test.json", "tags": [] },
+  { "detail": "Local file", "kind": 4, "label": "./tst.js", "tags": [] }
+]
+
+Complete src/CompletionAttributes.res 36:14
+posCursor:[36:14] posNoWhite:[36:13] Found expr:[36:12->36:14]
+Completable: CextensionNode(t)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "`%todo` is used to tell the compiler that some code still needs to be implemented.",
+    "insertText": "todo",
+    "kind": 4,
+    "label": "todo",
+    "tags": []
+  },
+  {
+    "detail": "`%todo` is used to tell the compiler that some code still needs to be implemented. With a payload.",
+    "insertText": "todo(\"${0:TODO}\")",
+    "insertTextFormat": 2,
+    "kind": 4,
+    "label": "todo (with payload)",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 39:21
+Attribute id:as:[39:18->39:21] label:as
+Completable: Cdecorator(as)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "",
+    "documentation": {
+      "kind": "markdown",
+      "value": "The `@as` decorator is commonly used on record types to alias record field names to a different JavaScript attribute name.\n\nThis is useful to map to JavaScript attribute names that cannot be expressed in ReScript (such as keywords).\n\nIt is also possible to map a ReScript record to a JavaScript array by passing indices to the `@as` decorator.\n\n[Read more and see examples in the documentation](https://rescript-lang.org/syntax-lookup#as-decorator)."
+    },
+    "insertText": "as(\"$0\")",
+    "insertTextFormat": 2,
+    "kind": 4,
+    "label": "as",
+    "tags": []
+  }
+]
+
+Complete src/CompletionAttributes.res 42:23
+Attribute id:as:[42:20->42:23] label:as
+Completable: Cdecorator(as)
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+[
+  {
+    "detail": "",
+    "documentation": {
+      "kind": "markdown",
+      "value": "The `@as` decorator is commonly used on record types to alias record field names to a different JavaScript attribute name.\n\nThis is useful to map to JavaScript attribute names that cannot be expressed in ReScript (such as keywords).\n\nIt is also possible to map a ReScript record to a JavaScript array by passing indices to the `@as` decorator.\n\n[Read more and see examples in the documentation](https://rescript-lang.org/syntax-lookup#as-decorator)."
+    },
+    "insertText": "as(\"$0\")",
+    "insertTextFormat": 2,
+    "kind": 4,
+    "label": "as",
+    "tags": []
+  }
+]
+

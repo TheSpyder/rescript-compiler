@@ -1,2 +1,0 @@
-let x = {  }
-let f = ((Function$ (fun a -> fun b -> {  }))[@res.arity 2])

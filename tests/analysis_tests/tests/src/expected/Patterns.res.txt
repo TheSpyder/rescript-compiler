@@ -1,0 +1,36 @@
+Definition src/Patterns.res 19:10
+{
+  "range": {
+    "end": { "character": 10, "line": 3 },
+    "start": { "character": 7, "line": 3 }
+  },
+  "uri": "file:///Patterns.res"
+}
+
+Definition src/Patterns.res 24:11
+{
+  "range": {
+    "end": { "character": 11, "line": 9 },
+    "start": { "character": 7, "line": 9 }
+  },
+  "uri": "file:///Patterns.res"
+}
+
+Definition src/Patterns.res 27:11
+{
+  "range": {
+    "end": { "character": 8, "line": 11 },
+    "start": { "character": 7, "line": 11 }
+  },
+  "uri": "file:///Patterns.res"
+}
+
+Definition src/Patterns.res 30:11
+{
+  "range": {
+    "end": { "character": 11, "line": 15 },
+    "start": { "character": 9, "line": 15 }
+  },
+  "uri": "file:///Patterns.res"
+}
+

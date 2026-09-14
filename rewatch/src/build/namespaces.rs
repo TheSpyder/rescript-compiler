@@ -1,10 +1,14 @@
+use crate::build::compile::get_runtime_path_args;
 use crate::build::packages;
-use crate::helpers;
+use crate::helpers::StrippedVerbatimPath;
+use crate::project_context::ProjectContext;
 use ahash::AHashSet;
+use anyhow::{Result, anyhow};
 use std::fs::File;
 use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
-
 // Namespaces work like the following: The build system will generate a file
 // called `MyModule.mlmap` which contains all modules that are in the namespace
 //
@@ -23,13 +27,13 @@ pub fn gen_mlmap(
     package: &packages::Package,
     namespace: &str,
     depending_modules: &AHashSet<String>,
-) -> String {
+) -> PathBuf {
     let build_path_abs = package.get_build_path();
     // we don't really need to create a digest, because we track if we need to
     // recompile in a different way but we need to put it in the file for it to
     // be readable.
 
-    let path = build_path_abs.to_string() + "/" + namespace + ".mlmap";
+    let path = build_path_abs.join(format!("{namespace}.mlmap"));
     let mut file = File::create(&path).expect("Unable to create mlmap");
 
     file.write_all(b"randjbuildsystem\n")
@@ -46,17 +50,50 @@ pub fn gen_mlmap(
         file.write_all(b"\n").unwrap();
     }
 
-    path.to_string()
+    path
 }
 
-pub fn compile_mlmap(package: &packages::Package, namespace: &str, bsc_path: &str) {
+pub fn compile_mlmap(
+    project_context: &ProjectContext,
+    package: &packages::Package,
+    namespace: &str,
+    bsc_path: &Path,
+) -> Result<()> {
     let build_path_abs = package.get_build_path();
-    let mlmap_name = format!("{}.mlmap", namespace);
-    let args = vec!["-w", "-49", "-color", "always", "-no-alias-deps", &mlmap_name];
+    let mlmap_name = format!("{namespace}.mlmap");
+    let mut args: Vec<String> = vec![];
+    // include `-runtime-path` arg
+    args.extend(get_runtime_path_args(&package.config, project_context)?);
+    // remaining flags
+    args.extend([
+        "-w".to_string(),
+        "-49".to_string(),
+        "-color".to_string(),
+        "always".to_string(),
+        "-no-alias-deps".to_string(),
+    ]);
+    args.push(mlmap_name.clone());
 
-    let _ = Command::new(bsc_path)
-        .current_dir(helpers::canonicalize_string_path(&build_path_abs).unwrap())
-        .args(args)
-        .output()
-        .expect("err");
+    let output = Command::new(bsc_path)
+        .current_dir(
+            build_path_abs
+                .canonicalize()
+                .map(StrippedVerbatimPath::to_stripped_verbatim_path)
+                .ok()
+                .unwrap(),
+        )
+        .args(&args)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(anyhow!(
+            "Failed to compile namespace mlmap {} in {}: {}",
+            namespace,
+            build_path_abs.to_string_lossy(),
+            stderr
+        ));
+    }
+
+    Ok(())
 }

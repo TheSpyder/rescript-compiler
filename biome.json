@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.8.3/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.5/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -7,11 +7,26 @@
     "useIgnoreFile": true
   },
   "linter": {
-    "enabled": false
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "style": {
+        "useTemplate": "off",
+        "noCommonJs": "error"
+      },
+      "nursery": {},
+      "suspicious": {
+        "noAssignInExpressions": "warn"
+      },
+      "correctness": {
+        "useImportExtensions": "error",
+        "noUndeclaredDependencies": "error",
+        "noUnusedImports": "error",
+        "noUnusedVariables": "warn"
+      }
+    }
   },
-  "organizeImports": {
-    "enabled": false
-  },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
   "formatter": {
     "enabled": true,
     "formatWithErrors": false,
@@ -19,19 +34,7 @@
     "indentWidth": 2,
     "lineEnding": "lf",
     "lineWidth": 80,
-    "attributePosition": "auto",
-    "ignore": [
-      "jscomp/build_tests/**/lib/**",
-      "jscomp/build_tests/**/src/**",
-      "jscomp/test/**",
-      "lib/**",
-      "ninja/**",
-      "playground/**",
-      "**/*.bs.js",
-      "**/*.res.js",
-      "**/*.gen.ts*",
-      "package.json"
-    ]
+    "attributePosition": "auto"
   },
   "javascript": {
     "formatter": {
@@ -45,5 +48,37 @@
       "quoteStyle": "double",
       "attributePosition": "auto"
     }
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!**/.yarn",
+      "!**/tests/analysis_tests/**/src",
+      "!**/tests/build_tests/**/src",
+      "!**/tests/belt_tests/**/src",
+      "!**/tests/commonjs_tests/src",
+      "!**/tests/dependencies/**/src",
+      "!**/tests/docstring_tests",
+      "!**/tests/gentype_tests",
+      "**/tests/gentype_tests/typescript-react-example/**",
+      "!**/tests/tests/**/src",
+      "!**/tests/tools_tests/**/src",
+      "!**/rewatch",
+      "!**/lib/es6",
+      "!**/lib/js",
+      "!**/lib/bs",
+      "!**/playground",
+      "!**/*.bs.js",
+      "!**/*.res.js",
+      "!**/*.res.mjs",
+      "!**/*.gen.ts*",
+      "!**/*.d.ts",
+      "!**/*.exe",
+      "!**/package.json",
+      "!**/packages/artifacts.json",
+      "!**/.mypy_cache",
+      "!**/.history",
+      "!**/analysis/reanalyze/diagrams/*.svg"
+    ]
   }
 }

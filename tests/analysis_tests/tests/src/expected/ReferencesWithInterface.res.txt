@@ -1,0 +1,39 @@
+References src/ReferencesWithInterface.res 0:4
+[
+  {
+    "range": {
+      "end": { "character": 53, "line": 9 },
+      "start": { "character": 52, "line": 9 }
+    },
+    "uri": "file:///Cross.res"
+  },
+  {
+    "range": {
+      "end": { "character": 54, "line": 12 },
+      "start": { "character": 53, "line": 12 }
+    },
+    "uri": "file:///Cross.res"
+  },
+  {
+    "range": {
+      "end": { "character": 54, "line": 16 },
+      "start": { "character": 53, "line": 16 }
+    },
+    "uri": "file:///Cross.res"
+  },
+  {
+    "range": {
+      "end": { "character": 5, "line": 0 },
+      "start": { "character": 4, "line": 0 }
+    },
+    "uri": "file:///ReferencesWithInterface.resi"
+  },
+  {
+    "range": {
+      "end": { "character": 5, "line": 0 },
+      "start": { "character": 4, "line": 0 }
+    },
+    "uri": "file:///ReferencesWithInterface.res"
+  }
+]
+

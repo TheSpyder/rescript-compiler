@@ -1,0 +1,160 @@
+Xform not_compiled/DocTemplate.res 3:3
+Hit: Add Documentation template
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 9, "line": 5 },
+  "start": { "character": 0, "line": 3 }
+}
+newText:
+<--here
+/**
+
+*/
+type rec t = A | B
+// ^xfm
+and e = C
+
+Xform not_compiled/DocTemplate.res 6:15
+Hit: Add Documentation template
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 33, "line": 6 },
+  "start": { "character": 0, "line": 6 }
+}
+newText:
+<--here
+/**
+
+*/
+@unboxed type name = Name(string)
+
+Xform not_compiled/DocTemplate.res 8:4
+Hit: Add Documentation template
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 9, "line": 8 },
+  "start": { "character": 0, "line": 8 }
+}
+newText:
+<--here
+/**
+
+*/
+let a = 1
+
+Xform not_compiled/DocTemplate.res 10:4
+Hit: Add Documentation template
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 20, "line": 10 },
+  "start": { "character": 0, "line": 10 }
+}
+newText:
+<--here
+/**
+
+*/
+let inc = x => x + 1
+
+Xform not_compiled/DocTemplate.res 12:7
+Hit: Add Documentation template
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 1, "line": 16 },
+  "start": { "character": 0, "line": 12 }
+}
+newText:
+<--here
+/**
+
+*/
+module T = {
+  //   ^xfm
+  let b = 1
+  //  ^xfm
+}
+Hit: Extract local module "T" to file "T.res"
+
+CreateFile: T.res
+
+TextDocumentEdit: T.res
+{
+  "end": { "character": 1, "line": 16 },
+  "start": { "character": 0, "line": 12 }
+}
+newText:
+<--here
+//   ^xfm
+let b = 1
+//  ^xfm
+
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 1, "line": 16 },
+  "start": { "character": 0, "line": 12 }
+}
+newText:
+<--here
+
+
+Xform not_compiled/DocTemplate.res 14:6
+Hit: Add Documentation template
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 11, "line": 14 },
+  "start": { "character": 2, "line": 14 }
+}
+newText:
+  <--here
+  /**
+  
+  */
+  let b = 1
+Hit: Extract local module "T" to file "T.res"
+
+CreateFile: T.res
+
+TextDocumentEdit: T.res
+{
+  "end": { "character": 1, "line": 16 },
+  "start": { "character": 0, "line": 12 }
+}
+newText:
+<--here
+//   ^xfm
+let b = 1
+//  ^xfm
+
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 1, "line": 16 },
+  "start": { "character": 0, "line": 12 }
+}
+newText:
+<--here
+
+
+Xform not_compiled/DocTemplate.res 18:2
+Hit: Add Documentation template
+
+TextDocumentEdit: DocTemplate.res
+{
+  "end": { "character": 46, "line": 18 },
+  "start": { "character": 0, "line": 17 }
+}
+newText:
+<--here
+/**
+
+*/
+@module("path")
+external dirname: string => string = "dirname"
+

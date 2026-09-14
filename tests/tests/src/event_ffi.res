@@ -1,0 +1,29 @@
+let h0 = x => x()
+/* {[
+     function h0 (x){
+         return x ()
+       }
+   ]}
+*/
+let h00 = x => x()
+
+let h1 = (x, y) => x(y) /* weird case */
+let h10 = x => x(3)
+
+let h30 = x => a => x(3, 3, a)
+let h33 = x => x(1, 2, 3)
+let h34 = x => x(1, 2, 3)(4)
+
+let ocaml_run = (b, c) => ((x, y, z) => x + y + z)(1, b, c)
+
+let a0 = () => Console.log("hi")
+let a1 = () => x => x
+let a2 = (x, y) => x + y
+let a3 = (x, y, z) => x + y + z
+/* polymoprhic restriction */
+
+let test_as: (_ as 'b, 'a => 'a) => 'b = List.map
+
+let xx: unit => _ => unit = () => _ => Console.log(3)
+
+/* let test_hihi = hihi _ [@bs] */

@@ -1,0 +1,804 @@
+(**************************************************************************)
+(*                                                                        *)
+(*                                 OCaml                                  *)
+(*                                                                        *)
+(*             Xavier Leroy, projet Cristal, INRIA Rocquencourt           *)
+(*                                                                        *)
+(*   Copyright 1996 Institut National de Recherche en Informatique et     *)
+(*     en Automatique.                                                    *)
+(*                                                                        *)
+(*   All rights reserved.  This file is distributed under the terms of    *)
+(*   the GNU Lesser General Public License version 2.1, with the          *)
+(*   special exception on linking described in the file LICENSE.          *)
+(*                                                                        *)
+(**************************************************************************)
+
+(** Abstract syntax tree produced by parsing *)
+
+open Asttypes
+
+type constant =
+  | Pconst_integer of string * char option
+  (* 3 3l 3L 3n
+
+     Suffixes [g-z][G-Z] are accepted by the parser.
+     Suffixes except 'l', 'L' are rejected by the typechecker
+  *)
+  | Pconst_char of {source: string; semantic: int}
+  (* An ordinary character literal.
+
+     [source] is the text between the single quotes, as produced by the scanner,
+     and is retained for printing. [semantic] is the decoded Unicode code point
+     used by typing and matching. For example, ['\u{1F600}'] produces
+     [{source = "\\u{1F600}"; semantic = 0x1F600}].
+
+     Compiler-created literals use [String_literal.encode_char_source] to derive
+     a canonical [source] from [semantic]. *)
+  | Pconst_string of String_literal.string_literal
+  (* An ordinary double-quoted string literal.
+
+     [source] is the text between the quotes, as produced by the scanner, and is
+     retained for printing. [semantic] is the decoded runtime string used by
+     typing, matching, and optimizations. For example, ["a\\n"] produces
+     a payload whose source is ["a\\n"] and whose semantic value contains an
+     actual newline.
+
+     The scanner preserves user-written escape spelling except that it rewrites
+     legacy three-digit decimal escapes to hexadecimal escapes. Compiler-created
+     Payloads are constructed through [String_literal], which validates this
+     relationship. *)
+  | Pconst_json of string
+  (* The JavaScript source inside a non-interpolated [json`...`] literal. For
+     example, [@as(json`{"ok": true}`)] stores ["{\"ok\": true}"]. Built-in
+     FFI processing consumes this form in supported external attributes;
+     otherwise the frontend rejects it. The string is JavaScript source, not a
+     decoded ReScript string value. *)
+  | Pconst_raw_source of string
+  (* JavaScript source carried by a compiler extension such as [raw] or [ffi].
+     For example, [%raw("x + 1")] stores ["x + 1"]. The extension
+     interprets the string as JavaScript source rather than as a ReScript
+     runtime string value. *)
+  | Pconst_float of string * char option
+(* 3.4 2e5 1.4e-4
+
+   Suffixes [g-z][G-Z] are accepted by the parser.
+   Suffixes are rejected by the typechecker.
+*)
+
+(** {1 Extension points} *)
+
+type attribute = string loc * payload
+(* [@id ARG]
+   [@@id ARG]
+
+   Metadata containers passed around within the AST.
+   The compiler ignores unknown attributes.
+*)
+
+and extension = string loc * payload
+(* [%id ARG]
+   [%%id ARG]
+
+   Sub-language placeholder -- rejected by the typechecker.
+*)
+
+and attributes = attribute list
+
+and payload =
+  | PStr of structure
+  | PSig of signature (* : SIG *)
+  | PTyp of core_type (* : T *)
+  | PPat of pattern * expression option
+(* ? P  or  ? P when E *)
+
+(* Type expressions *)
+
+(** {1 Core language} *)
+
+and core_type = {
+  ptyp_desc: core_type_desc;
+  ptyp_loc: Location.t;
+  ptyp_attributes: attributes; (* ... [@id1] [@id2] *)
+}
+
+and arg = {attrs: attributes; lbl: arg_label; typ: core_type}
+
+and core_type_desc =
+  | Ptyp_any (*  _ *)
+  | Ptyp_var of string (* 'a *)
+  | Ptyp_arrow of {params: arg list; ret: core_type}
+    (* (T1, ~l:T2, ?l:T3) => T       n-ary uncurried function type.
+       The function's arity is [List.length params]; a function returning
+       another function is a nested [Ptyp_arrow] in [ret].
+       Invariant: params <> [] (a zero-argument function takes [unit]). *)
+  | Ptyp_tuple of core_type list
+    (* T1 * ... * Tn
+
+       Invariant: n >= 2
+    *)
+  | Ptyp_constr of Longident.t loc * core_type list
+    (* tconstr
+       T tconstr
+       (T1, ..., Tn) tconstr
+    *)
+  | Ptyp_object of object_field list * closed_flag
+    (* < l1:T1; ...; ln:Tn >     (flag = Closed)
+       < l1:T1; ...; ln:Tn; .. > (flag = Open)
+    *)
+  | Ptyp_alias of core_type * string (* T as 'a *)
+  | Ptyp_variant of row_field list * closed_flag * label list option
+    (* [ `A|`B ]         (flag = Closed; labels = None)
+       [> `A|`B ]        (flag = Open;   labels = None)
+       [< `A|`B ]        (flag = Closed; labels = Some [])
+       [< `A|`B > `X `Y ](flag = Closed; labels = Some ["X";"Y"])
+    *)
+  | Ptyp_poly of string loc list * core_type
+    (* 'a1 ... 'an. T
+
+       Can only appear in the following context:
+
+       - As the core_type of a Ppat_constraint node corresponding
+         to a constraint on a let-binding: let x : 'a1 ... 'an. T
+         = e ...
+
+       - Under Cfk_virtual for methods (not values).
+
+       - As the core_type of a Pctf_method node.
+
+       - As the core_type of a Pexp_poly node.
+
+       - As the pld_type field of a label_declaration.
+
+       - As a core_type of a Ptyp_object node.
+    *)
+  | Ptyp_package of package_type (* (module S) *)
+  | Ptyp_extension of extension
+(* [%id] *)
+
+and package_type = Longident.t loc * (Longident.t loc * core_type) list
+(*
+        (module S)
+        (module S with type t1 = T1 and ... and tn = Tn)
+       *)
+
+and row_field =
+  | Rtag of label loc * attributes * bool * variant_type_args list
+    (* [`A]                   ( true,  [] )
+        [`A of T]              ( false, [{txt = [T]}] )
+        [`A of T1 & .. & Tn]   ( false, [{txt = [T1]};...;{txt = [Tn]}] )
+        [`A of & T1 & .. & Tn] ( true,  [{txt = [T1]};...;{txt = [Tn]}] )
+
+       Each inner list records the syntactic arity of one payload group:
+       #A(T1, ..., Tn)         [T1; ...; Tn]
+       #A((T1, ..., Tn))       [Ptyp_tuple [T1; ...; Tn]]
+
+       - The 2nd field is true if the tag contains a
+         constant (empty) constructor.
+       - '&' occurs when several types are used for the same constructor
+         (see 4.2 in the manual)
+
+       - TODO: switch to a record representation
+    *)
+  | Rinherit of core_type
+(* [ T ] *)
+
+and variant_type_args = core_type list loc
+
+and object_field =
+  | Otag of label loc * attributes * core_type
+  | Oinherit of core_type
+
+(* Patterns *)
+and pattern = {
+  ppat_desc: pattern_desc;
+  ppat_loc: Location.t;
+  ppat_attributes: attributes; (* ... [@id1] [@id2] *)
+}
+
+and record_pat_rest = {
+  rest_loc: Location.t;
+  rest_name: string loc;
+  rest_type: core_type option;
+}
+
+and pattern_desc =
+  | Ppat_any (* _ *)
+  | Ppat_var of string loc (* x *)
+  | Ppat_alias of pattern * string loc (* P as 'a *)
+  | Ppat_constant of constant (* 1, 'a', "true", 1.0, 1l, 1L, 1n *)
+  | Ppat_interval of constant * constant
+    (* 'a'..'z'
+
+       Other forms of interval are recognized by the parser
+       but rejected by the type-checker. *)
+  | Ppat_tuple of pattern list (* (P1, ..., Pn)
+
+       Invariant: n >= 2
+    *)
+  | Ppat_construct of Longident.t loc * pattern list loc
+    (* C                  []
+       C(P)               [P]
+       C(P1, ..., Pn)     [P1; ...; Pn]
+       C((P1, ..., Pn))   [Ppat_tuple [P1; ...; Pn]]
+
+       The list's location spans the argument parentheses, including both
+       delimiters. For constructors without parentheses or generated nodes,
+       use the enclosing node's location. The v0 bridge uses the payload's
+       location when the original parentheses span is unavailable.
+
+       This list preserves syntax, not the declared constructor arity.
+       Type checking normalizes tuple grouping using the resolved constructor.
+    *)
+  | Ppat_variant of label * pattern list loc
+    (* #A                  []
+       #A(P)               [P]
+       #A(P1, ..., Pn)     [P1; ...; Pn]
+       #A((P1, ..., Pn))   [Ppat_tuple [P1; ...; Pn]]
+
+       Argument locations follow Ppat_construct.
+    *)
+  | Ppat_record of
+      pattern record_element list * closed_flag * record_pat_rest option
+    (* { l1=P1; ...; ln=Pn }        (flag = Closed, rest = None)
+       { l1=P1; ...; ln=Pn; _}      (flag = Open, rest = None)
+       { l1=P1; ...; ...T as r }    (rest = Some {rest_type = Some T; _})
+       { l1=P1; ...; ...restName }  (rest = Some {rest_type = None; _})
+
+       Invariant: n > 0
+    *)
+  | Ppat_array of pattern list (* [| P1; ...; Pn |] *)
+  | Ppat_or of pattern * pattern (* P1 | P2 *)
+  | Ppat_constraint of pattern * core_type (* (P : T) *)
+  | Ppat_type of Longident.t loc (* #tconst *)
+  | Ppat_unpack of string loc
+    (* (module P)
+       Note: (module P : S) is represented as
+       Ppat_constraint(Ppat_unpack, Ptyp_package)
+    *)
+  | Ppat_exception of pattern (* exception P *)
+  | Ppat_extension of extension (* [%id] *)
+  | Ppat_open of Longident.t loc * pattern
+(* M.(P) *)
+
+and pat_record_label = Longident.t loc * pattern * bool (* optional *)
+
+(* Value expressions *)
+and expression = {
+  pexp_desc: expression_desc;
+  pexp_loc: Location.t;
+  (* Hack: made pexp_attributes mutable for use in analysis exe. Please do not use elsewhere! *)
+  mutable pexp_attributes: attributes; (* ... [@id1] [@id2] *)
+}
+
+and expression_desc =
+  | Pexp_ident of Longident.t loc (* x
+       M.x
+    *)
+  | Pexp_constant of constant (* 1, 'a', "true", 1.0, 1l, 1L, 1n *)
+  | Pexp_let of rec_flag * value_binding list * expression
+    (* let P1 = E1 and ... and Pn = EN in E       (flag = Nonrecursive)
+       let rec P1 = E1 and ... and Pn = EN in E   (flag = Recursive)
+    *)
+  | Pexp_fun of {
+      newtypes: (string loc * attributes) list;
+      params: fun_param list;
+      body: expression;
+      async: bool;
+    }
+    (* (type t, P1, ~l:P2, ?l:P3=E0) => E   n-ary uncurried function.
+       The function's arity is [List.length params]; a function returning
+       another function is a nested [Pexp_fun] in [body].
+       [newtypes] are the function's locally abstract types, each with its
+       own attributes; the parser hoists them in front of the value
+       parameters.
+
+       Notes:
+       - A default expression is only allowed on Optional parameters.
+       - "let f P = E" is represented using Pexp_fun.
+       - Invariant: params <> [] (a zero-argument function takes [unit]). *)
+  | Pexp_apply of {
+      funct: expression;
+      args: (arg_label * expression) list;
+      partial: bool;
+      transformed_jsx: bool;
+    }
+    (* E0 ~l1:E1 ... ~ln:En
+       li can be empty (non labeled argument) or start with '?'
+       (optional argument).
+
+       Invariant: n > 0
+    *)
+  | Pexp_match of expression * case list
+    (* match E0 with P1 -> E1 | ... | Pn -> En *)
+  | Pexp_try of expression * case list
+    (* try E0 with P1 -> E1 | ... | Pn -> En *)
+  | Pexp_tuple of expression list
+    (* (E1, ..., En)
+
+       Invariant: n >= 2
+    *)
+  | Pexp_construct of Longident.t loc * expression list loc
+    (* C                  []
+       C(E)               [E]
+       C(E1, ..., En)     [E1; ...; En]
+       C((E1, ..., En))   [Pexp_tuple [E1; ...; En]]
+
+       Argument locations follow Ppat_construct.
+
+       This list preserves syntax, not the declared constructor arity.
+       Type checking normalizes tuple grouping using the resolved constructor.
+    *)
+  | Pexp_variant of label * expression list loc
+    (* #A                  []
+       #A(E)               [E]
+       #A(E1, ..., En)     [E1; ...; En]
+       #A((E1, ..., En))   [Pexp_tuple [E1; ...; En]]
+
+       Argument locations follow Ppat_construct.
+    *)
+  | Pexp_record of expression record_element list * expression option
+    (* { l1=P1; ...; ln=Pn }     (None)
+       { E0 with l1=P1; ...; ln=Pn }   (Some E0)
+
+       Invariant: n > 0
+    *)
+  | Pexp_field of expression * Longident.t loc (* E.l *)
+  | Pexp_setfield of expression * Longident.t loc * expression (* E1.l <- E2 *)
+  | Pexp_array of expression list (* [| E1; ...; En |] *)
+  | Pexp_ifthenelse of expression * expression * expression option
+    (* if E1 then E2 else E3 *)
+  | Pexp_sequence of expression * expression (* E1; E2 *)
+  | Pexp_break (* break *)
+  | Pexp_continue (* continue *)
+  | Pexp_while of expression * expression (* while E1 do E2 done *)
+  | Pexp_for of pattern * expression * expression * direction_flag * expression
+    (* for i = E1 to E2 do E3 done      (flag = Upto)
+       for i = E1 downto E2 do E3 done  (flag = Downto)
+    *)
+  | Pexp_constraint of expression * core_type (* (E : T) *)
+  | Pexp_coerce of expression * unit * core_type
+    (* (E :> T)        (None, T)
+         *)
+  | Pexp_object_get of expression * label loc (* obj["x"] *)
+  | Pexp_object_set of expression * label loc * expression (* obj["x"] = v *)
+  | Pexp_object_literal of (label loc * expression) list
+    (* {"a": 1, "b": true} *)
+  | Pexp_letmodule of string loc * module_expr * expression
+    (* let module M = ME in E *)
+  | Pexp_letexception of extension_constructor * expression
+    (* let exception C in E *)
+  | Pexp_assert of expression
+    (* assert E
+       Note: "assert false" is treated in a special way by the
+       type-checker. *)
+  | Pexp_pack of module_expr
+    (* (module ME)
+
+       (module ME : S) is represented as
+       Pexp_constraint(Pexp_pack, Ptyp_package S) *)
+  | Pexp_open of override_flag * Longident.t loc * expression
+    (* M.(E)
+       let open M in E
+       let! open M in E *)
+  | Pexp_extension of extension
+  (* [%id] *)
+  (* . *)
+  | Pexp_await of expression
+  | Pexp_jsx_element of jsx_element
+  | Pexp_for_of of pattern * expression * expression
+    (* for pattern of array_expr do body_expr *)
+  | Pexp_for_await_of of pattern * expression * expression
+  (* for await pattern of iterable_expr do body_expr *)
+  | Pexp_regexp of {pattern: string; flags: string}
+  (* Literal source without delimiters; escapes and flag order are preserved.
+     Validation happens during frontend lowering, not AST construction. *)
+  | Pexp_template of {source_segments: string loc list; values: expression list}
+  (* An ordinary backquoted expression. [source_segments] contains the validated
+     text between and around the interpolations, including escape spelling;
+     [values] contains the interpolated expressions. For example, [`plain`]
+     produces [{source_segments = [{txt = "plain"; loc}]; values = []}], while
+     [`hello ${name}!`] produces
+     [{source_segments = [{txt = "hello "; loc}; {txt = "!"; loc}]; values =
+     [name]}]. Each segment retains its source location, and there is always one
+     more source segment than value. *)
+  | Pexp_tagged_template of {
+      tag: expression;
+      raw_sources: string loc list;
+      values: expression list;
+    }
+(* A JavaScript tagged template. For example, [sql`id = ${id}`] produces the
+   expression [sql] as [tag], located strings ["id = "; ""] as [raw_sources],
+   and [values = [id]]. There is always one more raw source than value. Each raw
+   source keeps its exact escape spelling and source location, and may contain
+   an invalid escape, as JavaScript permits for tagged templates. *)
+
+(* an element of a record pattern or expression *)
+and 'a record_element = {lid: Longident.t loc; x: 'a; opt: bool (* optional *)}
+
+and jsx_element =
+  | Jsx_fragment of jsx_fragment
+  | Jsx_unary_element of jsx_unary_element
+  | Jsx_container_element of jsx_container_element
+
+and jsx_tag_name =
+  | JsxLowerTag of string
+  | JsxQualifiedLowerTag of {path: Longident.t; name: string}
+  | JsxUpperTag of Longident.t
+  | JsxTagInvalid of string
+
+and jsx_fragment = {
+  (* > *) jsx_fragment_opening: Lexing.position;
+  (* children *) jsx_fragment_children: jsx_children;
+  (* </ *) jsx_fragment_closing: Lexing.position;
+}
+
+and jsx_unary_element = {
+  jsx_unary_element_tag_name: jsx_tag_name loc;
+  jsx_unary_element_props: jsx_props;
+}
+
+and jsx_container_element = {
+  (* jsx_container_element_opening_tag_start: Lexing.position; *)
+  jsx_container_element_tag_name_start: jsx_tag_name loc;
+  (* > *)
+  jsx_container_element_opening_tag_end: Lexing.position;
+  jsx_container_element_props: jsx_props;
+  jsx_container_element_children: jsx_children;
+  jsx_container_element_closing_tag: jsx_closing_container_tag option;
+}
+
+and jsx_prop =
+  (*
+   *   |  lident
+   *   | ?lident
+   *)
+  | JSXPropPunning of (* optional *) bool * (* name *) string loc
+  (*
+   *   |  lident =  jsx_expr
+   *   |  lident = ?jsx_expr
+   *)
+  | JSXPropValue of
+      (* name *) string loc * (* optional *) bool * (* value *) expression
+  (*
+   *   |  {...jsx_expr}
+   *)
+  | JSXPropSpreading of
+      (* entire {...expr} location *)
+      Location.t
+      * expression
+
+and jsx_children = expression list
+
+and jsx_props = jsx_prop list
+
+and jsx_closing_container_tag = {
+  (* </ *)
+  jsx_closing_container_tag_start: Lexing.position;
+  (* name *)
+  jsx_closing_container_tag_name: jsx_tag_name loc;
+  (* > *)
+  jsx_closing_container_tag_end: Lexing.position;
+}
+
+and case = {
+  (* (P -> E) or (P when E0 -> E) *)
+  pc_bar: Lexing.position option;
+  pc_lhs: pattern;
+  pc_guard: expression option;
+  pc_rhs: expression;
+}
+
+and fun_param = {
+  p_attrs: attributes;
+  p_lbl: arg_label;
+  p_default: expression option; (* ~l=E0 default; only for Optional labels *)
+  p_pat: pattern;
+}
+
+(* Value descriptions *)
+and value_description = {
+  pval_name: string loc;
+  pval_type: core_type;
+  pval_prim: primitive_repr option;
+  pval_attributes: attributes; (* ... [@@id1] [@@id2] *)
+  pval_loc: Location.t;
+}
+
+(*
+  val x: T                            (prim = None)
+  external x: T = "s"                 (prim = Some _)
+*)
+and primitive_repr =
+  | Prim_name of string
+    (* as written in the source: an intrinsic ("%identity", "#raw_expr")
+         or the not-yet-digested JS name of an FFI external *)
+  | Prim_ffi of {name: string; spec: External_ffi_types.t}
+    (* produced by the frontend digestion of an FFI external's
+       attributes; never observed by external PPXes, which run before
+       digestion *)
+  | Prim_inline_const of External_ffi_types.inline_const
+(* an [@inline(<literal>)] value declaration: a compile-time constant,
+   not an FFI; produced by digestion like [Prim_ffi] *)
+
+(* Type declarations *)
+and type_declaration = {
+  ptype_name: string loc;
+  ptype_params: (core_type * variance) list;
+      (* ('a1,...'an) t; None represents  _*)
+  ptype_cstrs: (core_type * core_type * Location.t) list;
+      (* ... constraint T1=T1'  ... constraint Tn=Tn' *)
+  ptype_kind: type_kind;
+  ptype_private: private_flag; (* = private ... *)
+  ptype_manifest: core_type option; (* = T *)
+  ptype_attributes: attributes; (* ... [@@id1] [@@id2] *)
+  ptype_loc: Location.t;
+}
+
+(*
+  type t                     (abstract, no manifest)
+  type t = T0                (abstract, manifest=T0)
+  type t = C of T | ...      (variant,  no manifest)
+  type t = T0 = C of T | ... (variant,  manifest=T0)
+  type t = {l: T; ...}       (record,   no manifest)
+  type t = T0 = {l : T; ...} (record,   manifest=T0)
+  type t = ..                (open,     no manifest)
+*)
+and type_kind =
+  | Ptype_abstract
+  | Ptype_variant of constructor_declaration list
+    (* Invariant: non-empty list *)
+  | Ptype_record of label_declaration list (* Invariant: non-empty list *)
+  | Ptype_open
+
+and label_declaration = {
+  pld_name: string loc;
+  pld_runtime_name: String_literal.string_literal loc option;
+      (* The [@as("...")] rename, taken out of the attributes when the field is
+         built. The attribute is the surface syntax; this is what it means.
+         The literal keeps its source spelling, and the location is the
+         attribute's own, so the printer can put it back exactly as it was
+         written. *)
+  pld_mutable: mutable_flag;
+  pld_optional: bool;
+  pld_type: core_type;
+  pld_loc: Location.t;
+  pld_attributes: attributes; (* l : T [@id1] [@id2] *)
+}
+
+(* { ...; l: T; ... }            (mutable=Immutable)
+   { ...; mutable l: T; ... }    (mutable=Mutable)
+
+   Note: T can be a Ptyp_poly.
+*)
+and constructor_declaration = {
+  pcd_name: string loc;
+  pcd_runtime_tag: constructor_tag loc option;
+      (* The [@as(...)] runtime tag, taken out of the attributes when the
+         constructor is built. The literal retains the source information
+         needed to print the attribute back where it was written. *)
+  pcd_args: constructor_arguments;
+  pcd_res: core_type option;
+  pcd_loc: Location.t;
+  pcd_attributes: attributes; (* C of ... [@id1] [@id2] *)
+}
+
+and constructor_tag =
+  | Pct_string of String_literal.string_literal
+  | Pct_int of string
+  | Pct_float of string
+  | Pct_bigint of string
+  | Pct_bool of bool
+  | Pct_null
+  | Pct_undefined
+
+and constructor_arguments =
+  | Pcstr_tuple of core_type list
+  | Pcstr_record of label_declaration list
+
+(*
+  | C of T1 * ... * Tn     (res = None,    args = Pcstr_tuple [])
+  | C: T0                  (res = Some T0, args = [])
+  | C: T1 * ... * Tn -> T0 (res = Some T0, args = Pcstr_tuple)
+  | C of {...}             (res = None,    args = Pcstr_record)
+  | C: {...} -> T0         (res = Some T0, args = Pcstr_record)
+  | C of {...} as t        (res = None,    args = Pcstr_record)
+*)
+and type_extension = {
+  ptyext_path: Longident.t loc;
+  ptyext_params: (core_type * variance) list;
+  ptyext_constructors: extension_constructor list;
+  ptyext_private: private_flag;
+  ptyext_attributes: attributes; (* ... [@@id1] [@@id2] *)
+}
+(*
+  type t += ...
+*)
+
+and extension_constructor = {
+  pext_name: string loc;
+  pext_kind: extension_constructor_kind;
+  pext_loc: Location.t;
+  pext_attributes: attributes; (* C of ... [@id1] [@id2] *)
+}
+
+and extension_constructor_kind =
+  | Pext_decl of constructor_arguments * core_type option
+    (*
+         | C of T1 * ... * Tn     ([T1; ...; Tn], None)
+         | C: T0                  ([], Some T0)
+         | C: T1 * ... * Tn -> T0 ([T1; ...; Tn], Some T0)
+       *)
+  | Pext_rebind of Longident.t loc
+(*
+         | C = D
+       *)
+
+(* Type expressions for the module language *)
+
+(** {1 Module language} *)
+
+and module_type = {
+  pmty_desc: module_type_desc;
+  pmty_loc: Location.t;
+  pmty_attributes: attributes; (* ... [@id1] [@id2] *)
+}
+
+and module_type_desc =
+  | Pmty_ident of Longident.t loc (* S *)
+  | Pmty_signature of signature (* sig ... end *)
+  | Pmty_functor of string loc * module_type option * module_type
+    (* functor(X : MT1) -> MT2 *)
+  | Pmty_with of module_type * with_constraint list (* MT with ... *)
+  | Pmty_typeof of module_expr (* module type of ME *)
+  | Pmty_extension of extension (* [%id] *)
+  | Pmty_alias of Longident.t loc
+(* (module M) *)
+
+and signature = signature_item list
+
+and signature_item = {psig_desc: signature_item_desc; psig_loc: Location.t}
+
+and signature_item_desc =
+  | Psig_value of value_description
+    (*
+          val x: T
+          external x: T = "s1" ... "sn"
+         *)
+  | Psig_type of rec_flag * type_declaration list
+    (* type t1 = ... and ... and tn = ... *)
+  | Psig_typext of type_extension (* type t1 += ... *)
+  | Psig_exception of extension_constructor (* exception C of T *)
+  | Psig_module of module_declaration (* module X : MT *)
+  | Psig_recmodule of module_declaration list
+    (* module rec X1 : MT1 and ... and Xn : MTn *)
+  | Psig_modtype of module_type_declaration
+    (* module type S = MT
+       module type S *)
+  | Psig_open of open_description (* open X *)
+  | Psig_include of include_description (* include MT *)
+  | Psig_attribute of attribute (* [@@@id] *)
+  | Psig_extension of extension * attributes
+(* [%%id] *)
+
+and module_declaration = {
+  pmd_name: string loc;
+  pmd_type: module_type;
+  pmd_attributes: attributes; (* ... [@@id1] [@@id2] *)
+  pmd_loc: Location.t;
+}
+(* S : MT *)
+
+and module_type_declaration = {
+  pmtd_name: string loc;
+  pmtd_type: module_type option;
+  pmtd_attributes: attributes; (* ... [@@id1] [@@id2] *)
+  pmtd_loc: Location.t;
+}
+(* S = MT
+   S       (abstract module type declaration, pmtd_type = None)
+*)
+
+and open_description = {
+  popen_lid: Longident.t loc;
+  popen_override: override_flag;
+  popen_loc: Location.t;
+  popen_attributes: attributes;
+}
+(* open! X - popen_override = Override (silences the 'used identifier
+                              shadowing' warning)
+   open  X - popen_override = Fresh
+*)
+
+and 'a include_infos = {
+  pincl_mod: 'a;
+  pincl_loc: Location.t;
+  pincl_attributes: attributes;
+}
+
+and include_description = module_type include_infos
+(* include MT *)
+
+and include_declaration = module_expr include_infos
+(* include ME *)
+
+and with_constraint =
+  | Pwith_type of Longident.t loc * type_declaration
+    (* with type X.t = ...
+
+       Note: the last component of the longident must match
+       the name of the type_declaration. *)
+  | Pwith_module of Longident.t loc * Longident.t loc (* with module X.Y = Z *)
+  | Pwith_typesubst of Longident.t loc * type_declaration
+    (* with type X.t := ..., same format as [Pwith_type] *)
+  | Pwith_modsubst of Longident.t loc * Longident.t loc
+(* with module X.Y := Z *)
+
+(* Value expressions for the module language *)
+
+and module_expr = {
+  pmod_desc: module_expr_desc;
+  pmod_loc: Location.t;
+  pmod_attributes: attributes; (* ... [@id1] [@id2] *)
+}
+
+and module_expr_desc =
+  | Pmod_ident of Longident.t loc (* X *)
+  | Pmod_structure of structure (* struct ... end *)
+  | Pmod_functor of string loc * module_type option * module_expr
+    (* functor(X : MT1) -> ME *)
+  | Pmod_apply of module_expr * module_expr (* ME1(ME2) *)
+  | Pmod_constraint of module_expr * module_type (* (ME : MT) *)
+  | Pmod_unpack of expression (* (val E) *)
+  | Pmod_extension of extension
+(* [%id] *)
+
+and structure = structure_item list
+
+and structure_item = {pstr_desc: structure_item_desc; pstr_loc: Location.t}
+
+and structure_item_desc =
+  | Pstr_eval of expression * attributes (* E *)
+  | Pstr_value of rec_flag * value_binding list
+    (* let P1 = E1 and ... and Pn = EN       (flag = Nonrecursive)
+       let rec P1 = E1 and ... and Pn = EN   (flag = Recursive)
+    *)
+  | Pstr_primitive of value_description
+    (* val x: T
+       external x: T = "s1" ... "sn" *)
+  | Pstr_type of rec_flag * type_declaration list
+    (* type t1 = ... and ... and tn = ... *)
+  | Pstr_typext of type_extension (* type t1 += ... *)
+  | Pstr_exception of extension_constructor
+    (* exception C of T
+       exception C = M.X *)
+  | Pstr_module of module_binding (* module X = ME *)
+  | Pstr_recmodule of module_binding list
+    (* module rec X1 = ME1 and ... and Xn = MEn *)
+  | Pstr_modtype of module_type_declaration (* module type S = MT *)
+  | Pstr_open of open_description (* open X *)
+  | Pstr_include of include_declaration (* include ME *)
+  | Pstr_attribute of attribute (* [@@@id] *)
+  | Pstr_extension of extension * attributes
+(* [%%id] *)
+
+and value_constraint = {
+  pvc_newtypes: string loc list;
+  (* Nonempty for parser-produced [let x: type a. t = e] bindings. *)
+  pvc_type: core_type;
+}
+
+and value_binding = {
+  pvb_pat: pattern;
+  pvb_expr: expression;
+  pvb_constraint: value_constraint option;
+  pvb_attributes: attributes;
+  pvb_loc: Location.t;
+}
+
+and module_binding = {
+  pmb_name: string loc;
+  pmb_expr: module_expr;
+  pmb_attributes: attributes;
+  pmb_loc: Location.t;
+}
+(* X = ME *)

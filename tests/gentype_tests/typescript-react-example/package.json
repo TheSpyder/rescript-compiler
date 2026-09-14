@@ -1,0 +1,22 @@
+{
+  "name": "@tests/gentype-react-example",
+  "private": true,
+  "scripts": {
+    "start": "rescript build -w",
+    "build": "rescript build",
+    "clean": "rescript clean",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@rescript/belt": "workspace:^",
+    "@rescript/react": "workspace:^",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "rescript": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "typescript": "6.0.3"
+  }
+}

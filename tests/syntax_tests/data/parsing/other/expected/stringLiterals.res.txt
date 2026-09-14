@@ -1,0 +1,15 @@
+let s = {js|some unicode é £ |js}
+let s =
+  match foo with
+  | {js|bar|js} -> {js|bar|js}
+  | {js|foo|js} -> {js|foo|js}
+  | _ -> {js|baz|js}
+let s = `你好，
+世界`
+let s = `"`
+let s = `foo`
+let s = `foo ${bar} baz`
+let s = `some unicode é ${bar} £ `
+let s = x`foo`
+let s = x`foo ${bar} baz`
+let s = x`some unicode é ${bar} £ `

@@ -1,0 +1,15 @@
+{
+  "name": "@tests/docstring-tests",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "rescript build",
+    "clean": "rescript clean",
+    "dev": "rescript -w"
+  },
+  "dependencies": {
+    "@rescript/belt": "workspace:^",
+    "@rescript/react": "workspace:^",
+    "rescript": "workspace:^"
+  }
+}

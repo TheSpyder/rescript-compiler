@@ -1,0 +1,12 @@
+open Mocha
+open Test_utils
+
+let ff = v => Float.toString(v)
+let f = v => Int.toString(v)
+
+describe(__MODULE__, () => {
+  test("infinity to string", () => eq(__LOC__, ff(Float.Constants.positiveInfinity), "Infinity"))
+  test("neg_infinity to string", () =>
+    eq(__LOC__, ff(Float.Constants.negativeInfinity), "-Infinity")
+  )
+})

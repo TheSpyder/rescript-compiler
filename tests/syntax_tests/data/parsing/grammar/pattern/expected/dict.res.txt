@@ -1,0 +1,29 @@
+let someDict = Primitive_dict.make [|({js|one|js}, {js|one|js})|]
+let (({ one?;_})[@res.dictPattern ]) = someDict
+let foo [arity:1]() =
+  match someDict with
+  | (({ one = {js|one|js};_})[@res.dictPattern ]) -> Console.log {js|one|js}
+  | _ -> Console.log {js|not one|js}
+type json =
+  | Boolean of bool 
+  | Null [@as null]
+  | String of string 
+  | Number of float 
+  | Object of json dict 
+  | Array of t array [@@unboxed ]
+type nonrec user = {
+  name: string ;
+  age?: float }
+let decodeUser [arity:1](json : json) =
+  (((match json with
+     | Object (({ name = String name; age = ageJson;_})[@res.dictPattern ])
+         ->
+         Some
+           {
+             name;
+             age =
+               ?((match ageJson with | Number age -> Some age | _ -> None))
+           }
+     | _ -> (Console.log {js|Not an object.|js}; None))
+  [@res.braces ]) : user option)
+;;Console.log (decodeUser (jsonParse (`{"name": "John", "age": 30}`)))

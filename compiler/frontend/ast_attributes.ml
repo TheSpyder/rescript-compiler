@@ -1,0 +1,225 @@
+(* Copyright (C) 2015-2016 Bloomberg Finance L.P.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * In addition to the permissions granted to you by the LGPL, you may combine
+ * or link a "work that uses the Library" with a publicly distributed version
+ * of this file to produce a combined library or application, then distribute
+ * that combined work under the terms of your choosing, with no requirement
+ * to comply with the obligations normally placed on you by section 4 of the
+ * LGPL version 3 (or the corresponding section of a later version of the LGPL
+ * should you choose to use a later version).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. *)
+
+type attr = Parsetree.attribute
+type t = attr list
+
+type attr_kind = Nothing | Meth_callback of attr
+
+let process_attributes_rev (attrs : t) : attr_kind * t =
+  Ext_list.fold_left attrs (Nothing, []) (fun (st, acc) (({txt}, _) as attr) ->
+      match (txt, st) with
+      | "this", (Nothing | Meth_callback _) -> (Meth_callback attr, acc)
+      | _, _ -> (st, attr :: acc))
+
+let external_attrs =
+  [|
+    "get";
+    "set";
+    "get_index";
+    "return";
+    "obj";
+    "val";
+    "module";
+    "scope";
+    "variadic";
+    "send";
+    "new";
+    "set_index";
+    Literals.gentype_import1;
+    Literals.gentype_import2;
+  |]
+
+let first_char_special (x : string) =
+  match String.unsafe_get x 0 with
+  | '#' | '?' | '%' -> true
+  | _ -> false
+
+let prim_to_be_encoded (name : string) = not (first_char_special name)
+
+(**
+
+   [@@inline]
+   let a = 3
+
+   [@@inline]
+   let a : 3 
+
+   They are not considered externals, they are part of the language
+*)
+
+let rs_externals (attrs : t) (pval_prim : Parsetree.primitive_repr option) =
+  match (attrs, pval_prim) with
+  | _, (None | Some (Prim_ffi _ | Prim_inline_const _)) -> false
+  (* [None] is a [val]; an already-digested external is not processed again *)
+  | [], Some (Prim_name name) ->
+    (* Not any attribute found *)
+    prim_to_be_encoded name
+  | _, Some (Prim_name name) ->
+    Ext_list.exists_fst attrs (fun ({txt} : string Asttypes.loc) ->
+        Ext_array.exists external_attrs (fun (x : string) -> txt = x))
+    || prim_to_be_encoded name
+
+let is_inline : attr -> bool = fun ({txt}, _) -> txt = "inline"
+
+let has_inline_payload (attrs : t) = Ext_list.find_first attrs is_inline
+
+let has_await_payload (attrs : t) = Ext_list.exists attrs Ast_await.is_await
+
+type derive_attr = {bs_deriving: Ast_payload.action list option} [@@unboxed]
+
+let process_derive_type (attrs : t) : derive_attr * t =
+  Ext_list.fold_left attrs
+    ({bs_deriving = None}, [])
+    (fun (st, acc) (({txt; loc}, payload) as attr) ->
+      match txt with
+      | "deriving" -> (
+        match st.bs_deriving with
+        | None ->
+          ( {
+              bs_deriving =
+                Some (Ast_payload.ident_or_record_as_config loc payload);
+            },
+            acc )
+        | Some _ -> Bs_syntaxerr.err loc Duplicated_bs_deriving)
+      | _ -> (st, attr :: acc))
+
+(* How an external's argument is encoded, from the one of [@string], [@int],
+   [@ignore] and [@unwrap] it carries. They are alternatives, so more than one
+   is a conflict. *)
+let arg_encoding (attrs : t) =
+  let attr_name = function
+    | `String -> "string"
+    | `Int -> "int"
+    | `Ignore -> "ignore"
+    | `Unwrap -> "unwrap"
+  in
+  (* Collect all of @string/@int/@ignore/@unwrap so the conflict error can
+     report every attribute involved, not just the first pair. *)
+  let found : ([`String | `Int | `Ignore | `Unwrap] * _) list =
+    Ext_list.filter_map attrs (fun (({txt; _}, _) as attr) ->
+        match txt with
+        | "string" -> Some (`String, attr)
+        | "int" -> Some (`Int, attr)
+        | "ignore" -> Some (`Ignore, attr)
+        | "unwrap" -> Some (`Unwrap, attr)
+        | _ -> None)
+  in
+  match found with
+  | [] -> `Nothing
+  | [(v, attr)] ->
+    Used_attributes.mark_used_attribute attr;
+    (v :> [`Nothing | `String | `Int | `Ignore | `Unwrap])
+  | (_, ({loc; _}, _)) :: _ as conflicting ->
+    Bs_syntaxerr.err loc
+      (Conflict_attributes (List.map (fun (v, _) -> attr_name v) conflicting))
+
+(* The one [@as] an item may carry, read with the payload the caller expects.
+   The first is decoded before a second is looked at, so a malformed payload is
+   reported ahead of the duplicate it precedes. *)
+let single_as ~decode (attrs : t) =
+  let st = ref None in
+  Ext_list.iter attrs (fun (({txt; loc}, payload) as attr) ->
+      if txt = "as" then
+        if !st = None then (
+          let value = decode ~loc payload in
+          Used_attributes.mark_used_attribute attr;
+          st := Some value)
+        else raise (Ast_untagged_variants.Error (loc, Duplicated_bs_as)));
+  !st
+
+let as_string (attrs : t) : string option =
+  single_as attrs ~decode:(fun ~loc payload ->
+      match Ast_payload.semantic_string_of_payload payload with
+      | None -> Bs_syntaxerr.err loc Expect_string_literal
+      | Some v -> v)
+
+let has_bs_optional (attrs : t) : bool =
+  Ext_list.exists attrs (fun (({txt}, _) as attr) ->
+      match txt with
+      | "optional" ->
+        Used_attributes.mark_used_attribute attr;
+        true
+      | _ -> false)
+
+let has_unwrap_attr (attrs : t) : bool =
+  Ext_list.exists attrs (fun ({txt}, _) ->
+      match txt with
+      | "let.unwrap" -> true
+      | _ -> false)
+
+let as_int (attrs : t) =
+  single_as attrs ~decode:(fun ~loc payload ->
+      match Ast_payload.is_single_int payload with
+      | None -> Bs_syntaxerr.err loc Expect_int_literal
+      | Some v -> v)
+
+type as_const_payload = Int of int | Str of string | Json of string
+
+let as_const (attrs : t) =
+  single_as attrs ~decode:(fun ~loc payload ->
+      match Ast_payload.is_single_int payload with
+      | Some v -> Int v
+      | None -> (
+        match Ast_payload.semantic_string_of_payload payload with
+        | Some s -> Str s
+        | None -> (
+          match payload with
+          | PStr
+              [
+                {
+                  pstr_desc =
+                    Pstr_eval
+                      ({pexp_desc = Pexp_constant (Pconst_json s); pexp_loc}, _);
+                };
+              ] -> (
+            (* Check that it is a valid object literal. *)
+            match
+              Classify_function.classify
+                ~check:
+                  (pexp_loc, Bs_flow_ast_utils.flow_deli_offset (Some "json"))
+                s
+            with
+            | Js_literal _ -> Json s
+            | _ ->
+              Location.raise_errorf ~loc:pexp_loc "an object literal expected")
+          | _ -> Bs_syntaxerr.err loc Expect_int_or_string_or_json_literal)))
+
+let locg = Location.none
+
+let get : attr = ({txt = "get"; loc = locg}, Ast_payload.empty)
+
+let get_index : attr = ({txt = "get_index"; loc = locg}, Ast_payload.empty)
+
+let set : attr = ({txt = "set"; loc = locg}, Ast_payload.empty)
+
+let internal_expansive : attr =
+  ({txt = "internal.expansive"; loc = locg}, Ast_payload.empty)
+
+let is_gentype (attr : attr) =
+  match attr with
+  | {Location.txt = "genType" | "gentype"; _}, _ -> true
+  | _ -> false
+
+let gentype : attr = ({txt = "genType"; loc = locg}, Ast_payload.empty)

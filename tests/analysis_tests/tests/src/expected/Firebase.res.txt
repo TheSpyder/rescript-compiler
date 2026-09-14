@@ -1,0 +1,56 @@
+Complete src/Firebase.res 30:9
+posCursor:[30:9] posNoWhite:[30:8] Found expr:[30:5->30:9]
+Pexp_field [30:5->30:8] _:[32:0->30:9]
+Completable: Cpath Value[ref].""
+Raw opens: 1 Firebase.place holder
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 2 Stdlib Firebase
+ContextPath Value[ref].""
+ContextPath Value[ref]
+Path ref
+ContextPath Value[ref]->
+ContextPath Value[ref]
+Path ref
+CPPipe pathFromEnv:Firebase.Firestore found:true
+Path Firebase.Firestore.
+Path 
+[
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nid: string\n```\n\n```rescript\ntype documentReference<'documentdata> = {\n  id: string,\n  path: string,\n}\n```"
+    },
+    "kind": 5,
+    "label": "id",
+    "tags": []
+  },
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\npath: string\n```\n\n```rescript\ntype documentReference<'documentdata> = {\n  id: string,\n  path: string,\n}\n```"
+    },
+    "kind": 5,
+    "label": "path",
+    "tags": []
+  },
+  {
+    "additionalTextEdits": [
+      {
+        "newText": "",
+        "range": {
+          "end": { "character": 9, "line": 30 },
+          "start": { "character": 8, "line": 30 }
+        }
+      }
+    ],
+    "detail": "documentReference<\n  'documentdata,\n> => Promise.t<documentSnapshot<'documentdata>>",
+    "insertText": "->Firestore.getDoc",
+    "kind": 12,
+    "label": "->Firestore.getDoc",
+    "sortText": "getDoc",
+    "tags": []
+  }
+]
+

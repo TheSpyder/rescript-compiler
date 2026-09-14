@@ -1,7 +1,8 @@
 {
   "name": "rescript",
-  "version": "12.0.0-alpha.4",
+  "version": "13.0.0-alpha.6",
   "description": "ReScript toolchain",
+  "type": "module",
   "keywords": [
     "ReScript",
     "Compiler",
@@ -9,12 +10,12 @@
     "JavaScript",
     "Language"
   ],
-  "license": "SEE LICENSE IN LICENSE",
-  "homepage": "http://rescript-lang.org",
-  "bugs": "https://github.com/rescript-lang/rescript-compiler/issues",
+  "license": "(LGPL-3.0-or-later AND MIT)",
+  "homepage": "https://rescript-lang.org",
+  "bugs": "https://github.com/rescript-lang/rescript/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rescript-lang/rescript-compiler.git"
+    "url": "git+https://github.com/rescript-lang/rescript.git"
   },
   "author": {
     "name": "Hongbo Zhang",
@@ -23,6 +24,7 @@
   "maintainers": [
     "Christoph Knittel (https://github.com/cknitt)",
     "Cristiano Calcagno (https://github.com/cristianoc)",
+    "Dmitry Zakharov (https://github.com/DZakh)",
     "Florian Hammerschmidt (https://github.com/fhammerschmidt)",
     "Gabriel Nordeborn (https://github.com/zth)",
     "Hyeseong Kim (https://github.com/cometkim)",
@@ -30,41 +32,39 @@
     "Matthias Le Brun (https://github.com/bloodyowl)",
     "Patrick Ecker (https://github.com/ryyppy)",
     "Paul Tsnobiladzé (https://github.com/tsnobip)",
+    "Shulhi Sapli (https://github.com/shulhi)",
     "Woonki Moon (https://github.com/mununki)"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "bin": {
-    "bsc": "bsc",
-    "bstracing": "lib/bstracing",
-    "rescript": "rescript",
-    "rewatch": "cli/rewatch"
+    "bsc": "cli/bsc.js",
+    "rescript": "cli/rescript.js",
+    "rescript-tools": "cli/rescript-tools.js"
   },
   "scripts": {
-    "postinstall": "node cli/rescript_postinstall.js",
-    "test": "node scripts/ciTest.js -all",
-    "test-bsb": "node scripts/ciTest.js -bsb",
-    "test-ocaml": "node scripts/ciTest.js -ounit",
-    "format": "biome format --changed --no-errors-on-unmatched --write .",
-    "format:all": "biome format --write .",
-    "checkFormat": "biome format --changed --no-errors-on-unmatched .",
-    "checkFormat:all": "biome format .",
-    "coverage": "nyc --timeout=3000 --reporter=html mocha jscomp/test/*test.js && open ./coverage/index.html"
+    "test": "node scripts/test.js -all",
+    "test-build": "node scripts/test.js -build",
+    "test-ocaml": "node scripts/test.js -ounit",
+    "test-release-plan": "node --test scripts/releasePlan.test.js",
+    "check": "biome check --no-errors-on-unmatched .",
+    "check:all": "biome check .",
+    "format": "biome check --no-errors-on-unmatched . --fix",
+    "coverage": "nyc --timeout=3000 --reporter=html mocha tests/tests/src/*_test.js && open ./coverage/index.html",
+    "typecheck": "tsc",
+    "apidocs:generate": "yarn workspace @utils/scripts apidocs:generate"
   },
   "files": [
     "CHANGELOG.md",
+    "COPYING",
+    "COPYING.LESSER",
     "CREDITS.md",
-    "ninja.COPYING",
-    "bsc",
-    "rescript",
-    "darwin",
-    "darwinarm64",
-    "linux",
-    "linuxarm64",
-    "win32",
     "docs/docson/build-schema.json",
-    "lib",
     "cli"
   ],
   "exports": {
@@ -73,12 +73,43 @@
     "./package.json": "./package.json"
   },
   "imports": {
-    "#cli/bin_path": "./cli/bin_path.js"
+    "#cli/*": "./cli/common/*.js",
+    "#dev/*": "./lib_dev/*.js"
+  },
+  "dependencies": {
+    "@rescript/runtime": "workspace:packages/@rescript/runtime"
+  },
+  "optionalDependencies": {
+    "@rescript/darwin-arm64": "workspace:packages/@rescript/darwin-arm64",
+    "@rescript/darwin-x64": "workspace:packages/@rescript/darwin-x64",
+    "@rescript/linux-arm64": "workspace:packages/@rescript/linux-arm64",
+    "@rescript/linux-x64": "workspace:packages/@rescript/linux-x64",
+    "@rescript/win32-x64": "workspace:packages/@rescript/win32-x64"
   },
   "devDependencies": {
-    "@biomejs/biome": "1.8.3",
-    "mocha": "10.1.0",
-    "nyc": "15.0.0"
+    "@biomejs/biome": "2.5.5",
+    "@types/node": "^26.1.1",
+    "@types/semver": "^7.7.0",
+    "@yarnpkg/types": "^4.0.1",
+    "mocha": "11.7.6",
+    "nyc": "18.0.0",
+    "semver": "^7.7.2",
+    "typescript": "6.0.3"
   },
-  "packageManager": "npm@10.8.1+sha512.0e9d42e92bd2318408ed81eaff2da5f78baf23ee7d12a6eed44a6e2901d0f29d7ab715d1b918ade601f72e769a824d9a5c322383f22bbbda5dd396e79de2a077"
+  "workspaces": [
+    "packages/dev-playground",
+    "packages/playground",
+    "packages/@rescript/*",
+    "tests/dependencies/**",
+    "tests/analysis_tests/**",
+    "tests/docstring_tests",
+    "tests/belt_tests",
+    "tests/gentype_tests/**",
+    "tests/tests",
+    "tests/tools_tests",
+    "tests/commonjs_tests",
+    "scripts/res"
+  ],
+  "packageManager": "yarn@4.12.0",
+  "preferUnplugged": true
 }

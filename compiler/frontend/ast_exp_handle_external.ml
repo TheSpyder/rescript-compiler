@@ -1,0 +1,124 @@
+(* Copyright (C) 2020 Hongbo Zhang, Authors of ReScript
+ * 
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * In addition to the permissions granted to you by the LGPL, you may combine
+ * or link a "work that uses the Library" with a publicly distributed version
+ * of this file to produce a combined library or application, then distribute
+ * that combined work under the terms of your choosing, with no requirement
+ * to comply with the obligations normally placed on you by section 4 of the
+ * LGPL version 3 (or the corresponding section of a later version of the LGPL
+ * should you choose to use a later version).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. *)
+
+let handle_debugger loc (payload : Ast_payload.t) =
+  match payload with
+  | PStr [] ->
+    Ast_external_mk.local_external_apply loc ~pval_prim:(Prim_name "%debugger")
+      ~pval_type:
+        (Ast_helper.Typ.arrow
+           [{attrs = []; lbl = Nolabel; typ = Ast_helper.Typ.any ()}]
+           (Ast_literal.type_unit ()))
+      [Ast_literal.val_unit ~loc ()]
+  | _ ->
+    Location.raise_errorf ~loc "%%debugger extension doesn't accept arguments"
+
+let handle_raw loc payload =
+  let is_function = ref None in
+  match
+    Ast_payload.raw_as_string_exp_exn ~kind:Raw_exp ~is_function payload
+  with
+  | None ->
+    Location.raise_errorf ~loc "%%raw extension can only be applied to a string"
+  | Some exp ->
+    {
+      exp with
+      pexp_desc =
+        Ast_external_mk.local_external_apply loc
+          ~pval_prim:(Prim_name "#raw_expr")
+          ~pval_type:
+            (Ast_helper.Typ.arrow
+               [{attrs = []; lbl = Nolabel; typ = Ast_helper.Typ.any ()}]
+               (Ast_helper.Typ.any ()))
+          [exp];
+      pexp_attributes =
+        (match !is_function with
+        | None -> exp.pexp_attributes
+        | Some _ -> Ast_attributes.internal_expansive :: exp.pexp_attributes);
+    }
+
+let handle_ffi ~loc ~payload =
+  let is_function = ref None in
+  let err () =
+    Location.raise_errorf ~loc
+      "%%ffi extension can only be applied to a string containing a JavaScript \
+       function such as \"(x) => ...\""
+  in
+  match
+    Ast_payload.raw_as_string_exp_exn ~kind:Raw_exp ~is_function payload
+  with
+  | None -> err ()
+  | Some exp ->
+    (* Wrap a type constraint based on arity.
+       E.g. for arity 2 constrain to type (_, _) => _ *)
+    let wrap_type_constraint (e : Parsetree.expression) =
+      let loc = e.pexp_loc in
+      let any = Ast_helper.Typ.any ~loc:e.pexp_loc () in
+      let arrow ~arity =
+        let effective_arity = if arity = 0 then 1 else arity in
+        let args =
+          Ext_list.init effective_arity (fun _ ->
+              ({attrs = []; lbl = Nolabel; typ = any} : Parsetree.arg))
+        in
+        Ast_helper.Typ.arrow ~loc args any
+      in
+      match !is_function with
+      | Some arity -> Ast_helper.Exp.constraint_ ~loc e (arrow ~arity)
+      | _ -> err ()
+    in
+    wrap_type_constraint
+      {
+        exp with
+        pexp_desc =
+          Ast_external_mk.local_external_apply loc
+            ~pval_prim:(Prim_name "#raw_expr")
+            ~pval_type:
+              (Ast_helper.Typ.arrow
+                 [{attrs = []; lbl = Nolabel; typ = Ast_helper.Typ.any ()}]
+                 (Ast_helper.Typ.any ()))
+            [exp];
+        pexp_attributes =
+          (match !is_function with
+          | None -> exp.pexp_attributes
+          | Some _ -> Ast_attributes.internal_expansive :: exp.pexp_attributes);
+      }
+
+let handle_raw_structure loc payload =
+  match Ast_payload.raw_as_string_exp_exn ~kind:Raw_program payload with
+  | Some exp ->
+    Ast_helper.Str.eval
+      {
+        exp with
+        pexp_desc =
+          Ast_external_mk.local_external_apply loc
+            ~pval_prim:(Prim_name "#raw_stmt")
+            ~pval_type:
+              (Ast_helper.Typ.arrow
+                 [{attrs = []; lbl = Nolabel; typ = Ast_helper.Typ.any ()}]
+                 (Ast_helper.Typ.any ()))
+            [exp];
+      }
+  | None ->
+    Location.raise_errorf ~loc
+      "%%%%raw extension can only be applied to a string"

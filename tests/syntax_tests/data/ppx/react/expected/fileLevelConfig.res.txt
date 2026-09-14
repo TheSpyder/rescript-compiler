@@ -1,0 +1,17 @@
+@@jsxConfig({version: 4, module_: `Pre\x61ct`})
+
+module V4A = {
+  @res.jsxComponentProps
+  type props<'msg> = {
+    msg: 'msg,
+  }
+
+  let make = ({msg, _}: props<_>): Preact.element => {
+    Preact.Elements.jsx("div", {children: ?Preact.Elements.someElement({msg->React.string})})
+  }
+  let make = Preact.component({
+    let \"FileLevelConfig$V4A" = (props: props<_>) => make(props)
+
+    \"FileLevelConfig$V4A"
+  })
+}

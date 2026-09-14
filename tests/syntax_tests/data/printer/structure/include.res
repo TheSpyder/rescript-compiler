@@ -1,0 +1,30 @@
+include Belt
+
+@attr
+include WebGl
+
+include (
+  /* Use varargs to avoid the ReactJS warning for duplicate keys in children */
+  {
+    @val @module("react")
+    external createElementInternalHack: 'a = "createElement"
+    @send
+    external apply: (
+      'theFunction,
+      'theContext,
+      'arguments,
+    ) => 'returnTypeOfTheFunction = "apply"
+
+    let createElementVariadic = (domClassName, ~props=?, children) => {
+      let variadicArguments =
+        [Obj.magic(domClassName), Obj.magic(props)]->Array.concat(children)
+      createElementInternalHack->apply(Nullable.null, variadicArguments)
+    }
+  }: {
+    let createElementVariadic: (
+      string,
+      ~props: props=?,
+      array<React.element>,
+    ) => React.element
+  }
+)

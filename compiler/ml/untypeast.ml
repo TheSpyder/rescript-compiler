@@ -1,0 +1,26 @@
+(**************************************************************************)
+(*                                                                        *)
+(*                                 OCaml                                  *)
+(*                                                                        *)
+(*    Thomas Gazagnaire (OCamlPro), Fabrice Le Fessant (INRIA Saclay)     *)
+(*                                                                        *)
+(*   Copyright 2007 Institut National de Recherche en Informatique et     *)
+(*     en Automatique.                                                    *)
+(*                                                                        *)
+(*   All rights reserved.  This file is distributed under the terms of    *)
+(*   the GNU Lesser General Public License version 2.1, with the          *)
+(*   special exception on linking described in the file LICENSE.          *)
+(*                                                                        *)
+(**************************************************************************)
+
+open Asttypes
+open Parsetree
+
+let constant = function
+  | Const_char semantic ->
+    Pconst_char {source = String_literal.encode_char_source semantic; semantic}
+  | Const_string semantic -> Ast_helper.Const.string semantic
+  | Const_int i -> Pconst_integer (string_of_int i, None)
+  | Const_bigint (sign, i) ->
+    Pconst_integer (Bigint_utils.to_string sign i, Some 'n')
+  | Const_float f -> Pconst_float (f, None)

@@ -1,0 +1,192 @@
+Complete src/CompletionFromModule2.res 2:26
+posCursor:[2:26] posNoWhite:[2:25] Found expr:[2:3->2:26]
+Pexp_field [2:3->2:25] _:[11:0->2:26]
+Completable: Cpath Value[CompletionFromModule, n].""
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+ContextPath Value[CompletionFromModule, n].""
+ContextPath Value[CompletionFromModule, n]
+Path CompletionFromModule.n
+ContextPath Value[CompletionFromModule, n]->
+ContextPath Value[CompletionFromModule, n]
+Path CompletionFromModule.n
+CPPipe pathFromEnv:SomeModule found:true
+Path CompletionFromModule.SomeModule.
+Path 
+[
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nname: string\n```\n\n```rescript\ntype t = {name: string}\n```"
+    },
+    "kind": 5,
+    "label": "name",
+    "tags": []
+  },
+  {
+    "additionalTextEdits": [
+      {
+        "newText": "",
+        "range": {
+          "end": { "character": 26, "line": 2 },
+          "start": { "character": 25, "line": 2 }
+        }
+      }
+    ],
+    "detail": "t => string",
+    "insertText": "->CompletionFromModule.SomeModule.getName",
+    "kind": 12,
+    "label": "->CompletionFromModule.SomeModule.getName",
+    "sortText": "getName",
+    "tags": []
+  }
+]
+
+Complete src/CompletionFromModule2.res 5:27
+posCursor:[5:27] posNoWhite:[5:26] Found expr:[5:3->5:27]
+Pexp_field [5:3->5:26] _:[11:0->5:27]
+Completable: Cpath Value[CompletionFromModule, nn].""
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+ContextPath Value[CompletionFromModule, nn].""
+ContextPath Value[CompletionFromModule, nn]
+Path CompletionFromModule.nn
+ContextPath Value[CompletionFromModule, nn]->
+ContextPath Value[CompletionFromModule, nn]
+Path CompletionFromModule.nn
+CPPipe pathFromEnv:SomeOtherModule found:true
+Path CompletionFromModule.SomeOtherModule.
+Path CompletionFromModule.SomeOtherModule.
+Path 
+[
+  {
+    "detail": "string",
+    "documentation": {
+      "kind": "markdown",
+      "value": "```rescript\nnname: string\n```\n\n```rescript\ntype typeOutsideModule = {nname: string}\n```"
+    },
+    "kind": 5,
+    "label": "nname",
+    "tags": []
+  },
+  {
+    "additionalTextEdits": [
+      {
+        "newText": "",
+        "range": {
+          "end": { "character": 27, "line": 5 },
+          "start": { "character": 26, "line": 5 }
+        }
+      }
+    ],
+    "detail": "t => string",
+    "insertText": "->CompletionFromModule.SomeOtherModule.getNName",
+    "kind": 12,
+    "label": "->CompletionFromModule.SomeOtherModule.getNName",
+    "sortText": "getNName",
+    "tags": []
+  },
+  {
+    "additionalTextEdits": [
+      {
+        "newText": "",
+        "range": {
+          "end": { "character": 27, "line": 5 },
+          "start": { "character": 26, "line": 5 }
+        }
+      }
+    ],
+    "detail": "typeOutsideModule => string",
+    "insertText": "->CompletionFromModule.SomeOtherModule.getNName2",
+    "kind": 12,
+    "label": "->CompletionFromModule.SomeOtherModule.getNName2",
+    "sortText": "getNName2",
+    "tags": []
+  },
+  {
+    "additionalTextEdits": [
+      {
+        "newText": "",
+        "range": {
+          "end": { "character": 27, "line": 5 },
+          "start": { "character": 26, "line": 5 }
+        }
+      }
+    ],
+    "detail": "t => string",
+    "insertText": "->CompletionFromModule.SomeOtherModule.getNName",
+    "kind": 12,
+    "label": "->CompletionFromModule.SomeOtherModule.getNName",
+    "sortText": "getNName",
+    "tags": []
+  },
+  {
+    "additionalTextEdits": [
+      {
+        "newText": "",
+        "range": {
+          "end": { "character": 27, "line": 5 },
+          "start": { "character": 26, "line": 5 }
+        }
+      }
+    ],
+    "detail": "typeOutsideModule => string",
+    "insertText": "->CompletionFromModule.SomeOtherModule.getNName2",
+    "kind": 12,
+    "label": "->CompletionFromModule.SomeOtherModule.getNName2",
+    "sortText": "getNName2",
+    "tags": []
+  }
+]
+
+Complete src/CompletionFromModule2.res 8:29
+posCursor:[8:29] posNoWhite:[8:28] Found expr:[8:3->0:-1]
+Completable: Cpath Value[CompletionFromModule, nnn]->
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+ContextPath Value[CompletionFromModule, nnn]->
+ContextPath Value[CompletionFromModule, nnn]
+Path CompletionFromModule.nnn
+CPPipe pathFromEnv: found:true
+Path CompletionFromModule.
+Path CompletionFromModule.SomeOtherModule.
+Path 
+[
+  {
+    "detail": "t => string",
+    "kind": 12,
+    "label": "CompletionFromModule.SomeOtherModule.getNName",
+    "tags": []
+  },
+  {
+    "detail": "typeOutsideModule => string",
+    "kind": 12,
+    "label": "CompletionFromModule.SomeOtherModule.getNName2",
+    "tags": []
+  }
+]
+
+Complete src/CompletionFromModule2.res 12:29
+posCursor:[12:29] posNoWhite:[12:28] Found expr:[12:3->0:-1]
+Completable: Cpath Value[CompletionFromModule, nnn]->
+Raw opens: 1 CompletionFromModule.SomeOtherModule.place holder
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 2 Stdlib CompletionFromModule
+ContextPath Value[CompletionFromModule, nnn]->
+ContextPath Value[CompletionFromModule, nnn]
+Path CompletionFromModule.nnn
+CPPipe pathFromEnv: found:true
+Path CompletionFromModule.
+Path CompletionFromModule.SomeOtherModule.
+Path 
+[
+  { "detail": "t => string", "kind": 12, "label": "getNName", "tags": [] },
+  {
+    "detail": "typeOutsideModule => string",
+    "kind": 12,
+    "label": "getNName2",
+    "tags": []
+  }
+]
+

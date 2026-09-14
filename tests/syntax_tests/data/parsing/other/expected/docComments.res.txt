@@ -1,0 +1,11 @@
+[@@@res.doc {js| This is a module comment |js}]
+[@@@res.doc {js| This is another module comment |js}]
+let z = 34[@@res.doc {js| This is a doc ✅ comment |js}]
+[@@@res.doc {js|And this is a res.doc module annotation|js}]
+let q = 11[@@res.doc {js|And this is a res.doc ✅ annotation|js}]
+type nonrec h = int[@@res.doc
+                     {js| This\n  * is a multi-line\n  multiline doc comment\n  |js}]
+type nonrec pathItem = {
+  }
+and operation = {
+  }[@@res.doc {js| Issue 6844: doc comment before \"and\" |js}]

@@ -1,0 +1,32 @@
+module M = {
+  type t = promise<string>
+
+  let a = (_t: t) => 4
+  let b = (_: t) => "c"
+  let xyz = (_: t, p: int) => p + 1
+}
+
+@module("meh")
+external meh: taggedTemplate<string, M.t> = "default"
+
+let w = meh``
+
+// let _ = w.
+//           ^com
+
+// let x = meh`foo`.
+//                  ^com
+
+let ordinaryInterpolation = `value: ${{
+  module LocalOrdinary = M
+  // LocalOrdinary.
+  //               ^com
+  LocalOrdinary.b(w)
+}}`
+
+let taggedInterpolation = meh`value: ${{
+  module LocalTagged = M
+  // LocalTagged.
+  //             ^com
+  LocalTagged.b(w)
+}}`

@@ -1,0 +1,13 @@
+// the comment "assert Tuple" should contain whitespace before/after
+let () = {
+  let point = Tuple.makePoint(0., 1., 0.)
+  let halfQuarter = rotationX(Math.Constants.pi /. 4.)
+  let fullQuarter = rotationX(Math.Constants.pi /. 2.)
+  
+  /*  assert Tuple.equals(
+    halfQuarter->applyTo(point),
+    Tuple.makePoint(0., Math.sqrt(2.) /. 2., Math.sqrt(2.) /. 2.),
+  ) */
+  
+  assert(Tuple.equals(fullQuarter->applyTo(point), Tuple.makePoint(0., 0., 1.)))
+}

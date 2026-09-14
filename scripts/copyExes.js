@@ -1,46 +1,63 @@
 #!/usr/bin/env node
-// Copy exes built by dune to platform bin dir
 
-const path = require("path");
-const fs = require("fs");
-const child_process = require("child_process");
-const { duneBinDir } = require("./dune");
-const { absolutePath: platformBinDir } = require("#cli/bin_path");
+// @ts-check
 
-const ninjaDir = path.join(__dirname, "..", "ninja");
-const rewatchDir = path.join(__dirname, "..", "rewatch");
+// Copy the rewatch exe built by cargo to the platform bin dir.
+// The dune-built compiler binaries are copied by dune promotion instead
+// (see compiler/sync/dune).
 
-if (!fs.existsSync(platformBinDir)) {
-  fs.mkdirSync(platformBinDir);
+import * as child_process from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { parseArgs } from "node:util";
+import { binDir } from "#cli/bins";
+import { rewatchDir } from "#dev/paths";
+
+const args = parseArgs({
+  args: process.argv.slice(2),
+  options: {
+    all: {
+      type: "boolean",
+    },
+    rewatch: {
+      type: "boolean",
+    },
+  },
+});
+
+const shouldCopyRewatch = args.values.all || args.values.rewatch;
+
+if (shouldCopyRewatch) {
+  copyExe(path.join(rewatchDir, "target", "release"), "rescript");
 }
 
-function copyExe(dir, exe) {
+/**
+ * @param {string} dir
+ * @param {string} exe
+ * @param {string | undefined} renamed
+ */
+function copyExe(dir, exe, renamed) {
   const ext = process.platform === "win32" ? ".exe" : "";
   const src = path.join(dir, exe + ext);
-  const dest = path.join(platformBinDir, exe + ".exe");
+  const dest = path.join(binDir, `${renamed ?? exe}.exe`);
 
   // For some reason, the copy operation fails in Windows CI if the file already exists.
   if (process.platform === "win32" && fs.existsSync(dest)) {
     fs.rmSync(dest);
   }
 
-  fs.copyFileSync(src, dest);
-
-  if (process.platform !== "win32") {
-    child_process.execSync(`strip ${dest}`);
+  let mode = 0o755;
+  if (fs.existsSync(dest)) {
+    mode = fs.statSync(dest).mode & 0o777;
+    fs.chmodSync(dest, mode | 0o200); // u+w
   }
-}
-
-if (process.argv.includes("-all") || process.argv.includes("-compiler")) {
-  copyExe(duneBinDir, "rescript");
-  copyExe(duneBinDir, "bsc");
-  copyExe(duneBinDir, "bsb_helper");
-}
-
-if (process.argv.includes("-all") || process.argv.includes("-ninja")) {
-  copyExe(ninjaDir, "ninja");
-}
-
-if (process.argv.includes("-all") || process.argv.includes("-rewatch")) {
-  copyExe(rewatchDir, "rewatch");
+  try {
+    fs.copyFileSync(src, dest);
+    if (process.platform !== "win32") {
+      fs.chmodSync(dest, mode | 0o200); // u+w
+      child_process.execSync(`strip ${dest}`);
+    }
+  } finally {
+    fs.chmodSync(dest, mode);
+  }
 }

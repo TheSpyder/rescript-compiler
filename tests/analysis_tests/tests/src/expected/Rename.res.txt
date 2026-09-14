@@ -1,0 +1,53 @@
+Rename src/Rename.res 0:4 y
+[
+  {
+    "edits": [
+      {
+        "newText": "y",
+        "range": {
+          "end": { "character": 5, "line": 0 },
+          "start": { "character": 4, "line": 0 }
+        }
+      },
+      {
+        "newText": "y",
+        "range": {
+          "end": { "character": 9, "line": 3 },
+          "start": { "character": 8, "line": 3 }
+        }
+      },
+      {
+        "newText": "y",
+        "range": {
+          "end": { "character": 9, "line": 7 },
+          "start": { "character": 8, "line": 7 }
+        }
+      }
+    ],
+    "textDocument": { "uri": "file:///Rename.res", "version": 0 }
+  }
+]
+
+Rename src/Rename.res 9:19 yy
+[
+  {
+    "edits": [
+      {
+        "newText": "yy",
+        "range": {
+          "end": { "character": 14, "line": 9 },
+          "start": { "character": 11, "line": 9 }
+        }
+      },
+      {
+        "newText": "yy",
+        "range": {
+          "end": { "character": 21, "line": 9 },
+          "start": { "character": 19, "line": 9 }
+        }
+      }
+    ],
+    "textDocument": { "uri": "file:///Rename.res", "version": 0 }
+  }
+]
+

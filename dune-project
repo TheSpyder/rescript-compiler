@@ -1,4 +1,4 @@
-(lang dune 2.3)
+(lang dune 3.17)
 
 (name rescript)
 
@@ -19,15 +19,54 @@
  (synopsis "ReScript compiler")
  (depends
   (ocaml
-   (>= 4.10))
+   (>= 5.0.0))
+  dune
+  (ppxlib
+   (>= 0.38.0))
+  (ppx_deriving :build)
+  (ppx_gen_rec :build)
+  wtf8
   (ocamlformat
-   (= 0.26.2))
-  (cppo
-   (= 1.6.9))
-  (js_of_ocaml
-   (= 5.8.1))
+   (and :with-test (= 0.29.0)))
+  (yojson
+   (= 3.0.0))
   (ounit2
-   (= 2.2.7))
-  (reanalyze
-   (= 2.25.1))
-  dune))
+   (and :with-test (= 2.2.7)))
+  (odoc :with-doc)
+  (ocaml-lsp-server
+   (and :with-dev-setup (>= 1.23.0)))
+  (js_of_ocaml
+   (and
+    (<> :os "win32")
+    :with-test
+    (= 6.4.1)))
+  (wasm_of_ocaml-compiler
+   (and
+    (<> :os "win32")
+    :with-test
+    (= 6.4.1)))))
+
+(package
+ (name analysis)
+ (synopsis "ReScript Analysis")
+ (depends
+  (ocaml
+   (>= 5.0.0))
+  (odoc :with-doc)
+  (lsp
+   (>= 1.23.0))
+  (yojson
+    (= 3.0.0))))
+
+(package
+ (name tools)
+ (synopsis "ReScript Tools")
+ (depends
+  (ocaml
+   (>= 5.0.0))
+  (cmarkit
+   (>= 0.3.0))
+  analysis
+  (yojson
+    (= 3.0.0))
+  (odoc :with-doc)))

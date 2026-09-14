@@ -1,0 +1,13 @@
+(env
+ (static
+  (flags
+   (:standard -ccopt -static))))
+
+(executable
+ (public_name rescript-editor-analysis)
+ (package analysis)
+ (modes byte exe)
+ (name main)
+ (instrumentation
+  (backend bisect_ppx))
+ (libraries analysis))

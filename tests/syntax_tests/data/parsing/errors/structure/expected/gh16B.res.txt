@@ -1,0 +1,33 @@
+
+  Syntax error!
+  syntax_tests/data/parsing/errors/structure/gh16B.res:19:2
+
+  17 │ 
+  18 │ 
+  19 │ })))))))))))))))))))))))))))))); // this ")" here, this can even be "))
+     │ ))))))))))))))" and should error
+  20 │ 
+  21 │ Console.log("test") // should not be omitted
+
+  I'm not sure what to parse here when looking at ")".
+
+open Ws
+let wss = Server.make { port = 82 }
+let address = wss -> Server.address
+let log [arity:1]msg = Console.log (`> Server: ${msg}`)
+;;log
+    (`Running on: ${address.address}:${address.port -> string_of_int} (${
+    address.family})`)
+module ClientSet =
+  struct
+    module T =
+      (Belt.Id.MakeComparable)(struct
+                                 type nonrec t = Client.t
+                                 let cmp [arity:2]a b =
+                                   ((compare (a -> Client.getUniqueId)
+                                       (b -> Client.getUniqueId))
+                                   [@res.braces ])
+                               end)
+    let empty = Belt.Set.make ~id:(module T)
+  end
+;;Console.log {js|test|js}

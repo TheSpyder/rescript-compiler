@@ -1,0 +1,14 @@
+{
+  "name": "@testrepo/with-ppx",
+  "version": "0.0.1",
+  "keywords": [
+    "rescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "rescript-nodejs": "17.0.0",
+    "sury": "11.0.0-rc.0",
+    "sury-ppx": "11.0.0-rc.0"
+  }
+}

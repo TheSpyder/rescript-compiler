@@ -1,0 +1,20 @@
+Definition src/Debug.res 2:27
+{
+  "range": {
+    "end": { "character": 9, "line": 1 },
+    "start": { "character": 6, "line": 1 }
+  },
+  "uri": "file:///ShadowedBelt.res"
+}
+
+Complete src/Debug.res 10:8
+posCursor:[10:8] posNoWhite:[10:7] Found expr:[10:5->10:8]
+Pexp_ident eqN:[10:5->10:8]
+Completable: Cpath Value[eqN]
+Package opens Stdlib.place holder Pervasives.JsxModules.place holder
+Resolved opens 1 Stdlib
+ContextPath Value[eqN]
+Path eqN
+[]
+
+

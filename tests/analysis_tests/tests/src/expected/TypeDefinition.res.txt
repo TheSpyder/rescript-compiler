@@ -1,0 +1,54 @@
+TypeDefinition src/TypeDefinition.res 2:9
+{
+  "range": {
+    "end": { "character": 11, "line": 2 },
+    "start": { "character": 5, "line": 2 }
+  },
+  "uri": "file:///TypeDefinition.res"
+}
+
+TypeDefinition src/TypeDefinition.res 5:4
+{
+  "range": {
+    "end": { "character": 24, "line": 0 },
+    "start": { "character": 0, "line": 0 }
+  },
+  "uri": "file:///TypeDefinition.res"
+}
+
+TypeDefinition src/TypeDefinition.res 8:4
+{
+  "range": {
+    "end": { "character": 28, "line": 2 },
+    "start": { "character": 0, "line": 2 }
+  },
+  "uri": "file:///TypeDefinition.res"
+}
+
+TypeDefinition src/TypeDefinition.res 13:4
+{
+  "range": {
+    "end": { "character": 26, "line": 11 },
+    "start": { "character": 0, "line": 11 }
+  },
+  "uri": "file:///TypeDefinition.res"
+}
+
+TypeDefinition src/TypeDefinition.res 16:13
+{
+  "range": {
+    "end": { "character": 28, "line": 2 },
+    "start": { "character": 0, "line": 2 }
+  },
+  "uri": "file:///TypeDefinition.res"
+}
+
+TypeDefinition src/TypeDefinition.res 20:9
+{
+  "range": {
+    "end": { "character": 24, "line": 0 },
+    "start": { "character": 0, "line": 0 }
+  },
+  "uri": "file:///TypeDefinition.res"
+}
+

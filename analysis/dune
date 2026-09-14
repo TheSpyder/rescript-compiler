@@ -1,0 +1,9 @@
+(dirs bin src reactive reanalyze vendor)
+
+(env
+ (release
+  (ocamlopt_flags
+   (:standard -O3 -unbox-closures)))
+ (static
+  (ocamlopt_flags
+   (:standard -O3 -unbox-closures))))

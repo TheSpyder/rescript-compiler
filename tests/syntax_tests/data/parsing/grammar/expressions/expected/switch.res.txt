@@ -1,0 +1,11 @@
+;;match x with | A -> () | B -> ()
+;;match a + b with | _ -> ()
+;;match a + b with | _ -> ()
+;;match (a, b) with | (Some a, Some b) -> (a + b) + c | _ -> 3
+;;match person1 with
+  | Teacher _ -> ()
+  | Student { reportCard = { gpa } } when gpa < 0.5 ->
+      Console.log {js|What's happening|js}
+  | Student { reportCard = { gpa } } when gpa > 0.9 ->
+      Console.log {js|Take more free time, you study too much.|js}
+  | Student _ -> Console.log {js|Heyo|js}

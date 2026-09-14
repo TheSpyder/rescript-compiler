@@ -1,0 +1,58 @@
+type nonrec a =
+  | One 
+  | Two 
+  | Three 
+type nonrec b =
+  | ... of a 
+  | Four 
+  | Five 
+type nonrec c =
+  | Six 
+  | Seven 
+type nonrec d =
+  | ... of b 
+  | ... of c 
+let doWithA [arity:1](a : a) =
+  ((match a with
+    | One -> Console.log {js|aaa|js}
+    | Two -> Console.log {js|twwwoooo|js}
+    | Three -> Console.log {js|threeeee|js})
+  [@res.braces ])
+let doWithB [arity:1](b : b) =
+  ((match b with
+    | One -> Console.log {js|aaa|js}
+    | _ -> Console.log {js|twwwoooo|js})
+  [@res.braces ])
+let lookup [arity:1](b : b) =
+  match b with
+  | ((#a)[@res.patVariantSpread ]) as a -> doWithA a
+  | Four -> Console.log {js|four|js}
+  | Five -> Console.log {js|five|js}
+let lookup2 [arity:1](d : d) =
+  match d with
+  | ((#a)[@res.patVariantSpread ]) as a -> doWithA a
+  | ((#b)[@res.patVariantSpread ]) as b -> doWithB b
+  | Six|Seven -> Console.log {js|Got rest of d|js}
+let lookupOpt [arity:1](b : b option) =
+  match b with
+  | Some (((#a)[@res.patVariantSpread ]) as a) -> doWithA a
+  | Some (Four) -> Console.log {js|four|js}
+  | Some (Five) -> Console.log {js|five|js}
+  | None -> Console.log {js|None|js}
+module Foo =
+  struct
+    type nonrec zz =
+      | First 
+      | Second 
+    type nonrec xx =
+      | ... of zz 
+      | Third 
+  end
+let doWithZ [arity:1](z : Foo.zz) =
+  match z with
+  | First -> Console.log {js|First|js}
+  | Second -> Console.log {js|Second|js}
+let lookup3 [arity:1](d : Foo.xx) =
+  match d with
+  | ((#Foo.zz)[@res.patVariantSpread ]) as z -> Console.log z
+  | Third -> Console.log {js|Third|js}
